@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authTelegram, getProfile } from '../api';
+import api from '../api';
 
 const UserContext = createContext(null);
 
@@ -13,27 +14,43 @@ export function UserProvider({ children }) {
             setLoading(true);
             setError(null);
 
+            // First check if server is reachable
+            try {
+                const healthRes = await api.get('/health');
+                console.log('Server health:', healthRes.data);
+            } catch (healthErr) {
+                console.error('Server unreachable:', healthErr);
+                setError(`Server unreachable: ${healthErr.message}`);
+                setLoading(false);
+                return;
+            }
+
             const tg = window.Telegram?.WebApp;
 
             if (tg && tg.initData) {
                 // Real Telegram environment
                 tg.ready();
                 tg.expand();
+                try { tg.requestFullscreen?.(); } catch (e) { }
+                try { tg.disableVerticalSwipes?.(); } catch (e) { }
                 tg.setHeaderColor('#0a0a1a');
                 tg.setBackgroundColor('#0a0a1a');
+                tg.isClosingConfirmationEnabled = true;
 
                 // Check for referral code in start_param
                 const startParam = tg.initDataUnsafe?.start_param || '';
 
+                console.log('Authenticating with Telegram initData...');
                 const response = await authTelegram(tg.initData, startParam);
                 setUser(response.data.user);
             } else {
-                // Not in Telegram — show message
                 setError('Please open this app from Telegram');
             }
         } catch (err) {
             console.error('Auth error:', err);
-            setError(err.response?.data?.error || 'Connection failed. Please try again.');
+            const detail = err.response?.data?.error || err.message || 'Unknown error';
+            const status = err.response?.status || 'No response';
+            setError(`Auth failed (${status}): ${detail}`);
         } finally {
             setLoading(false);
         }

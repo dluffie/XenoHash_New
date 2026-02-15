@@ -57,7 +57,7 @@ async function seedInitialBlock() {
 // Connect to MongoDB and start server
 const PORT = process.env.PORT || 5000;
 
-mongoose.connect(process.env.MONGODB_URI)
+mongoose.connect(process.env.MONGODB_URI, { dbName: 'xenoHash' })
     .then(async () => {
         console.log('✅ Connected to MongoDB');
         await seedInitialBlock();
