@@ -1,17 +1,18 @@
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+// In production (Render), API is on same origin. In dev, proxy handles it.
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 const api = axios.create({
     baseURL: `${API_BASE}/api`,
     headers: { 'Content-Type': 'application/json' }
 });
 
-// Auto-attach JWT token
+// Attach Telegram initData on every request
 api.interceptors.request.use((config) => {
-    const token = localStorage.getItem('xenohash_token');
-    if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
+    const tg = window.Telegram?.WebApp;
+    if (tg && tg.initData) {
+        config.headers['X-Telegram-Init-Data'] = tg.initData;
     }
     return config;
 });
@@ -19,9 +20,6 @@ api.interceptors.request.use((config) => {
 // Auth
 export const authTelegram = (initData, referralCode) =>
     api.post('/auth/telegram', { initData, referralCode });
-
-export const authDev = (telegramId, username, referralCode) =>
-    api.post('/auth/dev', { telegramId, username, referralCode });
 
 // User
 export const getProfile = () => api.get('/user/profile');

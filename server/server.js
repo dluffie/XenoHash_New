@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 
 const Block = require('./models/Block');
@@ -8,13 +9,10 @@ const Block = require('./models/Block');
 const app = express();
 
 // Middleware
-app.use(cors({
-    origin: process.env.CLIENT_URL || '*',
-    credentials: true
-}));
+app.use(cors());
 app.use(express.json());
 
-// Routes
+// API Routes
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/mining', require('./routes/mining'));
 app.use('/api/tasks', require('./routes/tasks'));
@@ -23,16 +21,17 @@ app.use('/api/leaderboard', require('./routes/leaderboard'));
 app.use('/api/user', require('./routes/user'));
 
 // Health check
-app.get('/', (req, res) => {
-    res.json({
-        status: 'XenoHash API is running',
-        version: '1.0.0',
-        timestamp: new Date().toISOString()
-    });
-});
-
 app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
+});
+
+// --- Serve React frontend in production ---
+const clientBuildPath = path.join(__dirname, '..', 'client', 'dist');
+app.use(express.static(clientBuildPath));
+
+// All non-API routes → serve React index.html
+app.get('*', (req, res) => {
+    res.sendFile(path.join(clientBuildPath, 'index.html'));
 });
 
 // Seed initial block if needed

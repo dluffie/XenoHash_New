@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { authTelegram, authDev, getProfile } from '../api';
+import { authTelegram, getProfile } from '../api';
 
 const UserContext = createContext(null);
 
@@ -13,32 +13,27 @@ export function UserProvider({ children }) {
             setLoading(true);
             setError(null);
 
-            // Check if running inside Telegram WebApp
             const tg = window.Telegram?.WebApp;
-            let response;
 
             if (tg && tg.initData) {
-                // Real Telegram auth
+                // Real Telegram environment
                 tg.ready();
                 tg.expand();
+                tg.setHeaderColor('#0a0a1a');
+                tg.setBackgroundColor('#0a0a1a');
 
                 // Check for referral code in start_param
                 const startParam = tg.initDataUnsafe?.start_param || '';
 
-                response = await authTelegram(tg.initData, startParam);
+                const response = await authTelegram(tg.initData, startParam);
+                setUser(response.data.user);
             } else {
-                // Dev mode - use mock telegram ID
-                const devId = localStorage.getItem('xenohash_dev_id') || String(Date.now());
-                localStorage.setItem('xenohash_dev_id', devId);
-                response = await authDev(devId, `dev_${devId.slice(-4)}`);
+                // Not in Telegram — show message
+                setError('Please open this app from Telegram');
             }
-
-            const { token, user: userData } = response.data;
-            localStorage.setItem('xenohash_token', token);
-            setUser(userData);
         } catch (err) {
             console.error('Auth error:', err);
-            setError(err.message || 'Authentication failed');
+            setError(err.response?.data?.error || 'Connection failed. Please try again.');
         } finally {
             setLoading(false);
         }
