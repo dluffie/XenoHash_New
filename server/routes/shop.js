@@ -25,7 +25,7 @@ const SHOP_ITEMS = {
     super_unlock: {
         label: 'Super Mode',
         description: '4x mining multiplier — serious mining power',
-        tonPrice: 0.5,
+        tonPrice: 1.0,
         icon: '💥',
         repeatable: false,
         unlocks: 'super'
@@ -33,7 +33,7 @@ const SHOP_ITEMS = {
     nitro_unlock: {
         label: 'Nitro Mode',
         description: '8x mining multiplier — maximum power',
-        tonPrice: 0.5,
+        tonPrice: 1.5,
         icon: '🔥',
         repeatable: false,
         unlocks: 'nitro'

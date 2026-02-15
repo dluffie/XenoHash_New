@@ -217,6 +217,7 @@ router.post('/tick', auth, async (req, res) => {
             continue: true,
             energy: user.energy,
             maxEnergy: user.maxEnergy,
+            tokens: user.tokens,
             onlineMiners: block.activeMiners.length,
             totalHashes: block.totalHashes
         });

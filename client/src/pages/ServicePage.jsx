@@ -3,8 +3,8 @@ import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react';
 import { useUser } from '../context/UserContext';
 import { getShopItems, purchaseItem, connectWallet } from '../api';
 
-// TON transaction amount in nanoTON (0.5 TON = 500000000 nanoTON)
-const TON_PRICE_NANO = '500000000';
+// Helper to safely convert TON to nanoTON (simple multiplication for now)
+const toNano = (amount) => Math.floor(amount * 1000000000).toString();
 
 export default function ServicePage() {
     const { user, updateUser, refreshUser } = useUser();
@@ -42,6 +42,9 @@ export default function ServicePage() {
     const handlePurchase = async (itemId) => {
         if (purchasing) return;
 
+        const item = shopItems.find(i => i.id === itemId);
+        if (!item) return;
+
         if (!tonAddress) {
             // Prompt wallet connection
             try {
@@ -67,7 +70,7 @@ export default function ServicePage() {
                 messages: [
                     {
                         address: walletAddress,
-                        amount: TON_PRICE_NANO // 0.5 TON
+                        amount: toNano(item.tonPrice)
                     }
                 ]
             };
@@ -90,14 +93,14 @@ export default function ServicePage() {
                     updateUser({ unlockedModes: res.data.unlockedModes });
                 }
 
-                const item = shopItems.find(i => i.id === itemId);
-                setMessage({ type: 'success', text: `✅ ${item?.label || 'Item'} purchased successfully!` });
+                setMessage({ type: 'success', text: `✅ ${item.label} purchased successfully!` });
 
                 // Refresh shop items
                 loadShopItems();
                 refreshUser();
             }
         } catch (err) {
+            console.error('Purchase error:', err);
             if (err?.message?.includes('User rejected')) {
                 setMessage({ type: 'error', text: 'Transaction cancelled by user' });
             } else {
@@ -157,7 +160,7 @@ export default function ServicePage() {
             {/* Shop Items */}
             <div className="section-title" style={{ marginTop: '1.5rem' }}>
                 <span className="title-icon">🛒</span>
-                Shop (0.5 TON each)
+                Shop
             </div>
 
             <div className="shop-grid">
@@ -185,11 +188,13 @@ export default function ServicePage() {
             </div>
 
             {/* Message Toast */}
-            {message && (
-                <div className={`toast-message ${message.type}`}>
-                    {message.text}
-                </div>
-            )}
+            {
+                message && (
+                    <div className={`toast-message ${message.type}`}>
+                        {message.text}
+                    </div>
+                )
+            }
 
             {/* Mining Mode Preview */}
             <div className="section-title" style={{ marginTop: '1.5rem' }}>
@@ -213,38 +218,40 @@ export default function ServicePage() {
                 })}
             </div>
 
-            {(() => {
-                const mode = modes.find(m => m.id === selectedMode);
-                const isLocked = user?.unlockedModes && !user.unlockedModes.includes(mode.id);
-                return (
-                    <div className="info-card mode-detail-card">
-                        <div className="mode-detail-header">
-                            <h3>{mode.label} Mode</h3>
-                            <span className="multiplier-badge">{mode.multiplier}</span>
+            {
+                (() => {
+                    const mode = modes.find(m => m.id === selectedMode);
+                    const isLocked = user?.unlockedModes && !user.unlockedModes.includes(mode.id);
+                    return (
+                        <div className="info-card mode-detail-card">
+                            <div className="mode-detail-header">
+                                <h3>{mode.label} Mode</h3>
+                                <span className="multiplier-badge">{mode.multiplier}</span>
+                            </div>
+                            <p className="mode-description">{mode.description}</p>
+                            <div className="mode-stats">
+                                <div className="mode-stat">
+                                    <span className="stat-label">Energy/Tick</span>
+                                    <span className="stat-value">{mode.cost} ⚡</span>
+                                </div>
+                                <div className="mode-stat">
+                                    <span className="stat-label">Multiplier</span>
+                                    <span className="stat-value">{mode.multiplier}</span>
+                                </div>
+                            </div>
+                            {isLocked && (
+                                <div className="unlock-requirement">
+                                    🔒 Purchase this mode for 0.5 TON above
+                                </div>
+                            )}
                         </div>
-                        <p className="mode-description">{mode.description}</p>
-                        <div className="mode-stats">
-                            <div className="mode-stat">
-                                <span className="stat-label">Energy/Tick</span>
-                                <span className="stat-value">{mode.cost} ⚡</span>
-                            </div>
-                            <div className="mode-stat">
-                                <span className="stat-label">Multiplier</span>
-                                <span className="stat-value">{mode.multiplier}</span>
-                            </div>
-                        </div>
-                        {isLocked && (
-                            <div className="unlock-requirement">
-                                🔒 Purchase this mode for 0.5 TON above
-                            </div>
-                        )}
-                    </div>
-                );
-            })()}
+                    );
+                })()
+            }
 
             <p className="mining-power-note">
                 Higher modes increase your hashrate by the multiplier shown. Energy drains faster with higher modes.
             </p>
-        </div>
+        </div >
     );
 }

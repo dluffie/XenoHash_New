@@ -23,6 +23,7 @@ export default function MiningPage() {
     const isMiningRef = useRef(false);
     const sessionStartRef = useRef(0);
     const cumulativeHashesRef = useRef(0);
+    const sessionStartBalanceRef = useRef(null);
 
     const modes = [
         { id: 'basic', label: 'Basic', cost: 10, multiplier: '1x' },
@@ -92,6 +93,7 @@ export default function MiningPage() {
         // Reset session refs so next start begins fresh
         sessionStartRef.current = 0;
         cumulativeHashesRef.current = 0;
+        sessionStartBalanceRef.current = null;
     };
 
     // Mine a single block — returns a promise that resolves when hash is found
@@ -136,6 +138,10 @@ export default function MiningPage() {
         if (!sessionStartRef.current) {
             sessionStartRef.current = Date.now();
             cumulativeHashesRef.current = 0;
+            // Set start balance if not set
+            if (sessionStartBalanceRef.current === null && user) {
+                sessionStartBalanceRef.current = user.tokens;
+            }
             setSessionHashes(0);
             setSessionDuration(0);
         }
@@ -153,7 +159,8 @@ export default function MiningPage() {
                 }
                 updateUser({
                     energy: tickRes.data.energy,
-                    maxEnergy: tickRes.data.maxEnergy
+                    maxEnergy: tickRes.data.maxEnergy,
+                    tokens: tickRes.data.tokens
                 });
 
                 // Update duration
@@ -308,8 +315,10 @@ export default function MiningPage() {
                             <span className="block-value highlight">{block.onlineMiners || 0}</span>
                         </div>
                         <div className="block-item">
-                            <span className="block-label">Era</span>
-                            <span className="block-value">{block.era || 0}</span>
+                            <span className="block-label">Profit</span>
+                            <span className="block-value highlight">
+                                +{Math.max(0, (user?.tokens - (sessionStartBalanceRef.current ?? user?.tokens))).toFixed(2)} XNH
+                            </span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Shares</span>
