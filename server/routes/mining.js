@@ -34,26 +34,35 @@ async function getOrCreateActiveBlock() {
         .sort({ blockNumber: -1 });
 
     if (!block) {
-        const lastBlock = await Block.findOne().sort({ blockNumber: -1 });
-        const nextNumber = lastBlock ? lastBlock.blockNumber + 1 : 1;
-        const reward = calculateBlockReward(nextNumber);
-        const era = getEra(nextNumber);
-        const difficulty = getTargetDifficulty(nextNumber);
+        // Try/catch for E11000 duplicate key error race condition
+        try {
+            const lastBlock = await Block.findOne().sort({ blockNumber: -1 });
+            const nextNumber = lastBlock ? lastBlock.blockNumber + 1 : 1;
+            const reward = calculateBlockReward(nextNumber);
+            const era = getEra(nextNumber);
+            const difficulty = getTargetDifficulty(nextNumber);
 
-        // Check supply cap
-        const tracker = await SupplyTracker.getInstance();
-        if (!tracker.canMint(reward)) {
-            return null; // Supply exhausted
+            // Check supply cap
+            const tracker = await SupplyTracker.getInstance();
+            if (!tracker.canMint(reward)) {
+                return null; // Supply exhausted
+            }
+
+            block = new Block({
+                blockNumber: nextNumber,
+                targetDifficulty: difficulty,
+                reward,
+                era,
+                status: 'waiting'
+            });
+            await block.save();
+        } catch (err) {
+            if (err.code === 11000) {
+                // Race condition: block created by another process. Retry.
+                return getOrCreateActiveBlock();
+            }
+            throw err;
         }
-
-        block = new Block({
-            blockNumber: nextNumber,
-            targetDifficulty: difficulty,
-            reward,
-            era,
-            status: 'waiting'
-        });
-        await block.save();
     }
 
     return block;
@@ -207,11 +216,15 @@ router.post('/tick', auth, async (req, res) => {
         user.energy -= config.energyPerTick;
         await user.save();
 
-        // Update tick timestamp and hashcount
-        block.activeMiners[minerIdx].lastTick = new Date();
-        block.totalHashes += Math.floor(Math.random() * 500) + 100;
-        block.totalShares += 1;
-        await block.save();
+        // Update tick timestamp and hashcount using atomic update to avoid VersionError
+        // We do this instead of block.save()
+        await Block.updateOne(
+            { _id: block._id, "activeMiners.userId": user._id },
+            {
+                $set: { "activeMiners.$.lastTick": new Date() },
+                $inc: { totalHashes: Math.floor(Math.random() * 500) + 100, totalShares: 1 }
+            }
+        );
 
         res.json({
             continue: true,
@@ -237,14 +250,15 @@ router.post('/submit', auth, async (req, res) => {
             return res.status(400).json({ error: 'Hash and nonce are required' });
         }
 
-        const block = await Block.findOne({ status: 'mining' }).sort({ blockNumber: -1 });
+        let block = await Block.findOne({ status: 'mining' }).sort({ blockNumber: -1 });
         if (!block) {
             return res.status(400).json({ error: 'No active block to submit to' });
         }
 
         // Verify the hash server-side
+        const currentBlockNumber = block.blockNumber;
         const { valid, hash: computedHash } = verifyMinedHash(
-            block.blockNumber, nonce, user.telegramId, block.targetDifficulty
+            currentBlockNumber, nonce, user.telegramId, block.targetDifficulty
         );
 
         if (!valid) {
@@ -256,7 +270,29 @@ router.post('/submit', auth, async (req, res) => {
             });
         }
 
-        // ---- Block found! Distribute rewards ----
+        // ---- Block found! Atomically lock it ----
+        // 1. Attempt to set status to 'processing_rewards'
+        // This ensures only one request succeeds in claiming the block
+        block = await Block.findOneAndUpdate(
+            { _id: block._id, status: 'mining' },
+            {
+                status: 'processing_rewards',
+                minedBy: user._id,
+                winningHash: computedHash
+            },
+            { new: true }
+        );
+
+        if (!block) {
+            // Check if it was already mined
+            const completedBlock = await Block.findOne({ blockNumber: currentBlockNumber, status: 'completed' });
+            if (completedBlock) {
+                return res.status(400).json({ error: 'Block already mined by someone else' });
+            }
+            return res.status(400).json({ error: 'Block execution race failed found/processing' });
+        }
+
+        // ---- Distribute rewards ----
         const tracker = await SupplyTracker.getInstance();
         let blockReward = block.reward;
 

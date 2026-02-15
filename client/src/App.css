@@ -151,7 +151,10 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 1rem;
-  height: var(--header-height);
+  /* Add safe area padding for notches/status bars */
+  padding-top: env(safe-area-inset-top, 20px);
+  padding-bottom: 0px;
+  height: calc(var(--header-height) + env(safe-area-inset-top, 20px));
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
