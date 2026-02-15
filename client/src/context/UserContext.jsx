@@ -73,7 +73,7 @@ export function UserProvider({ children }) {
         authenticate();
     }, [authenticate]);
 
-    // Energy regeneration timer (update display every 1s — +1 energy/sec)
+    // Energy regeneration timer (update display every 2s — +1 energy/2sec)
     useEffect(() => {
         if (!user) return;
         const interval = setInterval(() => {
@@ -81,7 +81,7 @@ export function UserProvider({ children }) {
                 if (!prev || prev.energy >= prev.maxEnergy) return prev;
                 return { ...prev, energy: Math.min(prev.energy + 1, prev.maxEnergy) };
             });
-        }, 1000);
+        }, 2000);
         return () => clearInterval(interval);
     }, [user]);
 

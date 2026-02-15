@@ -87,13 +87,13 @@ userSchema.pre('save', function (next) {
   next();
 });
 
-// Method to calculate and apply energy regeneration (1 per second)
+// Method to calculate and apply energy regeneration (1 per 2 seconds)
 userSchema.methods.regenerateEnergy = function () {
   const now = new Date();
-  const secondsPassed = Math.floor((now - this.lastEnergyUpdate) / 1000);
+  const regenTicks = Math.floor((now - this.lastEnergyUpdate) / 2000);
 
-  if (secondsPassed > 0) {
-    const newEnergy = Math.min(this.energy + secondsPassed, this.maxEnergy);
+  if (regenTicks > 0) {
+    const newEnergy = Math.min(this.energy + regenTicks, this.maxEnergy);
     this.energy = newEnergy;
     this.lastEnergyUpdate = now;
   }
