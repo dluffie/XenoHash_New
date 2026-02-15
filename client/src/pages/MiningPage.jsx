@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useUser } from '../context/UserContext';
 import { getCurrentBlock, joinMining, miningTick, submitHash, leaveMining, getLastBlocks } from '../api';
 
@@ -7,6 +7,7 @@ export default function MiningPage() {
     const [block, setBlock] = useState(null);
     const [lastBlocks, setLastBlocks] = useState([]);
     const [selectedMode, setSelectedMode] = useState('basic');
+    const [expandedBlock, setExpandedBlock] = useState(null);
 
     // Mining state
     const [isMining, setIsMining] = useState(false);
@@ -16,12 +17,10 @@ export default function MiningPage() {
     const [miningResult, setMiningResult] = useState(null);
     const [statusText, setStatusText] = useState('Ready to mine');
 
-    // Refs for worker, tick interval, and avoiding stale closures
+    // Refs
     const workerRef = useRef(null);
     const tickIntervalRef = useRef(null);
     const isMiningRef = useRef(false);
-    const modeRef = useRef('basic');
-    const startMiningBlockRef = useRef(null);
 
     const modes = [
         { id: 'basic', label: 'Basic', cost: 10, multiplier: '1x' },
@@ -30,7 +29,8 @@ export default function MiningPage() {
         { id: 'nitro', label: 'Nitro', cost: 80, multiplier: '8x' }
     ];
 
-    const fetchBlockData = useCallback(async () => {
+    // Fetch block data
+    const fetchBlockData = async () => {
         try {
             const [blockRes, blocksRes] = await Promise.all([
                 getCurrentBlock(),
@@ -41,206 +41,101 @@ export default function MiningPage() {
         } catch (err) {
             console.error('Failed to fetch block data:', err);
         }
-    }, []);
+    };
 
     useEffect(() => {
         fetchBlockData();
         const interval = setInterval(fetchBlockData, 15000);
         return () => clearInterval(interval);
-    }, [fetchBlockData]);
+    }, []);
 
-    // Cleanup worker on unmount
+    // Cleanup on unmount
     useEffect(() => {
         return () => {
             isMiningRef.current = false;
             if (workerRef.current) {
                 workerRef.current.terminate();
-                workerRef.current = null;
             }
             if (tickIntervalRef.current) {
                 clearInterval(tickIntervalRef.current);
-                tickIntervalRef.current = null;
             }
             leaveMining().catch(() => { });
         };
     }, []);
 
-    const stopMining = useCallback(() => {
-        isMiningRef.current = false;
-        setIsMining(false);
-        setStatusText('Mining stopped');
-
-        // Terminate worker
+    // Kill the current worker
+    const killWorker = () => {
         if (workerRef.current) {
             workerRef.current.postMessage({ type: 'stop' });
             workerRef.current.terminate();
             workerRef.current = null;
         }
+    };
 
-        // Clear tick interval
+    // Stop everything
+    const stopMining = () => {
+        isMiningRef.current = false;
+        setIsMining(false);
+        setStatusText('Mining stopped');
+        killWorker();
         if (tickIntervalRef.current) {
             clearInterval(tickIntervalRef.current);
             tickIntervalRef.current = null;
         }
-
-        // Leave the pool
         leaveMining().catch(() => { });
-    }, []);
+    };
 
-    // Core function: start mining a single block, auto-continues via ref
-    const startMiningBlock = useCallback(async () => {
-        const mode = modeRef.current;
+    // Mine a single block — returns a promise that resolves when hash is found
+    const mineOneBlock = (blockNumber, telegramId, targetDifficulty) => {
+        return new Promise((resolve, reject) => {
+            killWorker();
 
-        if (!isMiningRef.current) return;
-
-        try {
-            const joinRes = await joinMining(mode);
-            const { block: joinedBlock } = joinRes.data;
-
-            if (!isMiningRef.current) return; // User stopped while we were joining
-
-            setBlock(prev => ({ ...prev, ...joinedBlock }));
-            setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
-            setHashrate(0);
-            setNoncesTried(0);
-            setElapsed(0);
-
-            // Kill old worker if any
-            if (workerRef.current) {
-                workerRef.current.terminate();
-                workerRef.current = null;
-            }
-
-            // Start a new Web Worker
             const worker = new Worker(
                 new URL('../workers/miningWorker.js', import.meta.url),
                 { type: 'module' }
             );
             workerRef.current = worker;
 
-            worker.onmessage = async (e) => {
+            worker.onmessage = (e) => {
                 const msg = e.data;
-
                 if (msg.type === 'progress') {
                     setHashrate(msg.hashrate);
                     setNoncesTried(msg.hashCount);
                     setElapsed(msg.elapsed);
                 }
-
                 if (msg.type === 'found') {
-                    setStatusText('Hash found! Submitting to server...');
-
-                    try {
-                        const submitRes = await submitHash(msg.hash, msg.nonce);
-                        setMiningResult(submitRes.data);
-                        updateUser(submitRes.data.newBalance);
-                        setStatusText(`🎉 Block #${submitRes.data.blockNumber} mined! +${submitRes.data.finderReward} XNH — continuing...`);
-                        fetchBlockData();
-
-                        // Auto-continue to next block using ref (avoids stale closure)
-                        if (isMiningRef.current) {
-                            setTimeout(() => {
-                                if (isMiningRef.current && startMiningBlockRef.current) {
-                                    startMiningBlockRef.current();
-                                }
-                            }, 1000);
-                        }
-                    } catch (err) {
-                        const errMsg = err.response?.data?.error || 'Submit failed';
-                        if (errMsg.includes('already completed') || errMsg.includes('already been solved') || errMsg.includes('No active block')) {
-                            setStatusText('Block completed — moving to next...');
-                            fetchBlockData();
-                            if (isMiningRef.current) {
-                                setTimeout(() => {
-                                    if (isMiningRef.current && startMiningBlockRef.current) {
-                                        startMiningBlockRef.current();
-                                    }
-                                }, 500);
-                            }
-                        } else {
-                            setMiningResult({ error: errMsg });
-                            setStatusText('Submit failed: ' + errMsg);
-                            stopMining();
-                        }
-                    }
+                    resolve({ hash: msg.hash, nonce: msg.nonce });
                 }
             };
 
-            // Start hashing
+            worker.onerror = (err) => {
+                reject(err);
+            };
+
             worker.postMessage({
                 type: 'start',
-                data: {
-                    blockNumber: joinedBlock.blockNumber,
-                    telegramId: user.telegramId,
-                    targetDifficulty: joinedBlock.targetDifficulty
-                }
+                data: { blockNumber, telegramId, targetDifficulty }
             });
-        } catch (err) {
-            const errMsg = err.response?.data?.error || 'Failed to join mining';
-            // If it's a temporary error, retry after delay
-            if (isMiningRef.current && (errMsg.includes('energy') || errMsg.includes('locked'))) {
-                setMiningResult({ error: errMsg });
-                setStatusText('Mining stopped: ' + errMsg);
-                stopMining();
-            } else if (isMiningRef.current) {
-                setStatusText('Retrying join...');
-                setTimeout(() => {
-                    if (isMiningRef.current && startMiningBlockRef.current) {
-                        startMiningBlockRef.current();
-                    }
-                }, 2000);
-            }
-        }
-    }, [user, fetchBlockData, stopMining, updateUser]);
+        });
+    };
 
-    // Keep the ref always pointing to the latest version of startMiningBlock
-    useEffect(() => {
-        startMiningBlockRef.current = startMiningBlock;
-    }, [startMiningBlock]);
-
-    const handleStartMining = async () => {
-        if (isMining) {
-            stopMining();
-            return;
-        }
-
-        const modeConfig = modes.find(m => m.id === selectedMode);
-        if (!user || user.energy < modeConfig.cost) return;
-
-        // Check if mode is unlocked
-        if (user.unlockedModes && !user.unlockedModes.includes(selectedMode)) {
-            setMiningResult({ error: `${selectedMode} mode is locked. Buy it in the Service tab.` });
-            return;
-        }
-
-        setIsMining(true);
+    // Main mining loop — keeps mining blocks until energy runs out
+    const startMiningLoop = async (mode) => {
         isMiningRef.current = true;
-        modeRef.current = selectedMode;
+        setIsMining(true);
         setMiningResult(null);
-        setHashrate(0);
-        setNoncesTried(0);
-        setElapsed(0);
-        setStatusText('Joining mining pool...');
 
-        // Start mining the first block
-        await startMiningBlock();
-
-        // Energy tick every 2 seconds
+        // Start energy tick interval
         if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
         tickIntervalRef.current = setInterval(async () => {
             if (!isMiningRef.current) return;
-
             try {
                 const tickRes = await miningTick();
-
                 if (!tickRes.data.continue) {
-                    // Out of energy or no active block
                     setStatusText(`Mining stopped: ${tickRes.data.reason}`);
                     stopMining();
                     return;
                 }
-
-                // Update user energy
                 updateUser({
                     energy: tickRes.data.energy,
                     maxEnergy: tickRes.data.maxEnergy
@@ -249,6 +144,90 @@ export default function MiningPage() {
                 console.error('Tick error:', err);
             }
         }, 2000);
+
+        // Continuous mining loop
+        while (isMiningRef.current) {
+            try {
+                // 1. Join the pool
+                setStatusText('Joining mining pool...');
+                const joinRes = await joinMining(mode);
+                const joinedBlock = joinRes.data.block;
+
+                if (!isMiningRef.current) break;
+
+                setBlock(prev => ({ ...prev, ...joinedBlock }));
+                setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
+                setHashrate(0);
+                setNoncesTried(0);
+                setElapsed(0);
+
+                // 2. Mine until hash is found
+                const { hash, nonce } = await mineOneBlock(
+                    joinedBlock.blockNumber,
+                    user.telegramId,
+                    joinedBlock.targetDifficulty
+                );
+
+                if (!isMiningRef.current) break;
+
+                // 3. Submit the hash
+                setStatusText('Hash found! Submitting...');
+                try {
+                    const submitRes = await submitHash(hash, nonce);
+                    setMiningResult(submitRes.data);
+                    updateUser(submitRes.data.newBalance);
+                    setStatusText(`🎉 Block #${submitRes.data.blockNumber} mined! +${submitRes.data.finderReward} XNH`);
+                    fetchBlockData();
+                } catch (submitErr) {
+                    const errMsg = submitErr.response?.data?.error || 'Submit failed';
+                    // If block was already solved by someone else, just continue
+                    if (errMsg.includes('already') || errMsg.includes('No active block')) {
+                        setStatusText('Block solved by another miner — moving on...');
+                        fetchBlockData();
+                    } else {
+                        setStatusText('Submit error: ' + errMsg);
+                    }
+                }
+
+                // 4. Small pause before next block
+                await new Promise(r => setTimeout(r, 800));
+
+            } catch (err) {
+                if (!isMiningRef.current) break;
+                const errMsg = err.response?.data?.error || err.message || 'Error';
+                if (errMsg.includes('energy') || errMsg.includes('locked')) {
+                    setStatusText('Mining stopped: ' + errMsg);
+                    break;
+                }
+                // Temporary error — retry
+                setStatusText('Retrying in 2s...');
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+
+        // Loop exited — cleanup
+        stopMining();
+    };
+
+    const handleStartMining = () => {
+        if (isMining) {
+            stopMining();
+            return;
+        }
+
+        const modeConfig = modes.find(m => m.id === selectedMode);
+        if (!user || user.energy < modeConfig.cost) return;
+
+        if (user.unlockedModes && !user.unlockedModes.includes(selectedMode)) {
+            setMiningResult({ error: `${selectedMode} mode is locked. Buy it in the Service tab.` });
+            return;
+        }
+
+        startMiningLoop(selectedMode);
+    };
+
+    const toggleBlockDetail = (blockNumber) => {
+        setExpandedBlock(expandedBlock === blockNumber ? null : blockNumber);
     };
 
     const currentMode = modes.find(m => m.id === selectedMode);
@@ -422,15 +401,49 @@ export default function MiningPage() {
                     <div className="empty-state">No blocks mined yet. Be the first!</div>
                 ) : (
                     lastBlocks.map((b, i) => (
-                        <div key={i} className="block-row">
-                            <div className="block-row-left">
-                                <span className="block-number">#{b.blockNumber?.toLocaleString()}</span>
-                                <span className="block-miner">{b.minedBy}</span>
+                        <div key={i} className={`block-row-wrapper ${expandedBlock === b.blockNumber ? 'expanded' : ''}`}>
+                            <div className="block-row" onClick={() => toggleBlockDetail(b.blockNumber)}>
+                                <div className="block-row-left">
+                                    <span className="block-number">#{b.blockNumber?.toLocaleString()}</span>
+                                    <span className="block-miner">{b.minedBy}</span>
+                                </div>
+                                <div className="block-row-right">
+                                    <span className="block-reward">+{b.reward} XNH</span>
+                                    <span className="block-expand-icon">{expandedBlock === b.blockNumber ? '▲' : '▼'}</span>
+                                </div>
                             </div>
-                            <div className="block-row-right">
-                                <span className="block-reward">+{b.reward} XNH</span>
-                                <span className="block-hash">{b.winningHash || ''}</span>
-                            </div>
+                            {expandedBlock === b.blockNumber && (
+                                <div className="block-detail">
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Hash</span>
+                                        <span className="block-detail-value hash-text">{b.winningHash || '—'}</span>
+                                    </div>
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Previous Hash</span>
+                                        <span className="block-detail-value hash-text">{b.previousHash || '—'}</span>
+                                    </div>
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Nonce</span>
+                                        <span className="block-detail-value">{b.winningNonce?.toLocaleString() || '—'}</span>
+                                    </div>
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Difficulty</span>
+                                        <span className="block-detail-value">{'0'.repeat(b.targetDifficulty || 0)}...</span>
+                                    </div>
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Found by</span>
+                                        <span className="block-detail-value">{b.minedBy}</span>
+                                    </div>
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Timestamp</span>
+                                        <span className="block-detail-value">{b.completedAt ? new Date(b.completedAt).toLocaleString() : '—'}</span>
+                                    </div>
+                                    <div className="block-detail-row">
+                                        <span className="block-detail-label">Era</span>
+                                        <span className="block-detail-value">{b.era}</span>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     ))
                 )}

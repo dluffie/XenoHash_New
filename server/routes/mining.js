@@ -172,10 +172,10 @@ router.post('/join', auth, async (req, res) => {
 router.post('/tick', auth, async (req, res) => {
     try {
         const user = req.user;
-        const block = await Block.findOne({ status: 'mining' }).sort({ blockNumber: -1 });
+        const block = await Block.findOne({ status: { $in: ['mining', 'waiting'] } }).sort({ blockNumber: -1 });
 
         if (!block) {
-            return res.json({ continue: false, reason: 'No active block' });
+            return res.json({ continue: true, reason: 'Between blocks', energy: user.energy, maxEnergy: user.maxEnergy });
         }
 
         // Find this user in active miners
@@ -184,7 +184,8 @@ router.post('/tick', auth, async (req, res) => {
         );
 
         if (minerIdx === -1) {
-            return res.json({ continue: false, reason: 'Not in mining pool' });
+            // Miner might be between blocks (just submitted, about to rejoin)
+            return res.json({ continue: true, reason: 'Rejoining pool', energy: user.energy, maxEnergy: user.maxEnergy });
         }
 
         const miner = block.activeMiners[minerIdx];
@@ -484,6 +485,15 @@ router.get('/last-blocks', auth, async (req, res) => {
             .limit(10)
             .populate('minedBy', 'username firstName');
 
+        // Build previous hash map
+        const blockNumbers = blocks.map(b => b.blockNumber);
+        const prevBlocks = await Block.find({
+            blockNumber: { $in: blockNumbers.map(n => n - 1) },
+            status: 'completed'
+        }).select('blockNumber winningHash');
+        const prevHashMap = {};
+        prevBlocks.forEach(pb => { prevHashMap[pb.blockNumber + 1] = pb.winningHash; });
+
         res.json({
             blocks: blocks.map(b => ({
                 blockNumber: b.blockNumber,
@@ -491,7 +501,9 @@ router.get('/last-blocks', auth, async (req, res) => {
                 reward: b.reward,
                 era: b.era,
                 minedBy: b.minedBy?.username || b.minedBy?.firstName || 'Anonymous',
-                winningHash: b.winningHash ? b.winningHash.substring(0, 16) + '...' : null,
+                winningHash: b.winningHash || null,
+                previousHash: prevHashMap[b.blockNumber] || '0000000000000000',
+                winningNonce: b.winningNonce,
                 totalShares: b.totalShares,
                 totalHashes: b.totalHashes,
                 completedAt: b.completedAt
