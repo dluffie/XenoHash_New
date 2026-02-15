@@ -3,65 +3,94 @@ const auth = require('../middleware/auth');
 const Block = require('../models/Block');
 const MiningActivity = require('../models/MiningActivity');
 const User = require('../models/User');
+const SupplyTracker = require('../models/SupplyTracker');
 const ReferralCommission = require('../models/ReferralCommission');
+const {
+    calculateBlockReward,
+    getEra,
+    getTargetDifficulty,
+    verifyMinedHash,
+    TOTAL_SUPPLY
+} = require('../utils/miningUtils');
 
 const router = express.Router();
 
 // Mining mode configurations
 const MINING_MODES = {
-    basic: { energyCost: 100, multiplier: 1, label: 'Basic' },
-    turbo: { energyCost: 200, multiplier: 2, label: 'Turbo' },
-    super: { energyCost: 400, multiplier: 4, label: 'Super' },
-    nitro: { energyCost: 800, multiplier: 8, label: 'Nitro' }
+    basic: { energyPerTick: 10, multiplier: 1, label: 'Basic' },
+    turbo: { energyPerTick: 20, multiplier: 2, label: 'Turbo' },
+    super: { energyPerTick: 40, multiplier: 4, label: 'Super' },
+    nitro: { energyPerTick: 80, multiplier: 8, label: 'Nitro' }
 };
 
-// Base reward range
-const BASE_MIN_REWARD = 50;
-const BASE_MAX_REWARD = 200;
-const BIG_WIN_CHANCE = 0.10; // 10% chance
-const BIG_WIN_MULTIPLIER = 5;
+// Stale miner timeout (30 seconds without tick = inactive)
+const MINER_TIMEOUT_MS = 30000;
 
-// Generate a random reward based on mode
-function calculateReward(mode) {
-    const config = MINING_MODES[mode];
-    let reward = Math.random() * (BASE_MAX_REWARD - BASE_MIN_REWARD) + BASE_MIN_REWARD;
+/**
+ * Helper: Get or create current active block
+ */
+async function getOrCreateActiveBlock() {
+    let block = await Block.findOne({ status: { $in: ['waiting', 'mining'] } })
+        .sort({ blockNumber: -1 });
 
-    // 10% chance of big win
-    if (Math.random() < BIG_WIN_CHANCE) {
-        reward *= BIG_WIN_MULTIPLIER;
+    if (!block) {
+        const lastBlock = await Block.findOne().sort({ blockNumber: -1 });
+        const nextNumber = lastBlock ? lastBlock.blockNumber + 1 : 1;
+        const reward = calculateBlockReward(nextNumber);
+        const era = getEra(nextNumber);
+        const difficulty = getTargetDifficulty(nextNumber);
+
+        // Check supply cap
+        const tracker = await SupplyTracker.getInstance();
+        if (!tracker.canMint(reward)) {
+            return null; // Supply exhausted
+        }
+
+        block = new Block({
+            blockNumber: nextNumber,
+            targetDifficulty: difficulty,
+            reward,
+            era,
+            status: 'waiting'
+        });
+        await block.save();
     }
 
-    reward *= config.multiplier;
-    return Math.round(reward * 100) / 100; // Round to 2 decimals
+    return block;
+}
+
+/**
+ * Helper: Clean stale miners from a block
+ */
+function cleanStaleMiners(block) {
+    const now = Date.now();
+    block.activeMiners = block.activeMiners.filter(
+        m => (now - new Date(m.lastTick).getTime()) < MINER_TIMEOUT_MS
+    );
 }
 
 // GET /api/mining/block - Get current active block
 router.get('/block', auth, async (req, res) => {
     try {
-        let block = await Block.findOne({ status: { $in: ['waiting', 'mining'] } })
-            .sort({ blockNumber: -1 });
+        const block = await getOrCreateActiveBlock();
 
         if (!block) {
-            // Create a new block
-            const lastBlock = await Block.findOne().sort({ blockNumber: -1 });
-            const nextNumber = lastBlock ? lastBlock.blockNumber + 1 : 1;
-
-            block = new Block({
-                blockNumber: nextNumber,
-                difficulty: 84500 + Math.floor(Math.random() * 10000),
-                reward: 800 + Math.floor(Math.random() * 600),
-                status: 'waiting',
-                onlineMiners: Math.floor(Math.random() * 200) + 50
+            return res.json({
+                exhausted: true,
+                message: 'All XNH tokens have been mined!',
+                totalSupply: TOTAL_SUPPLY
             });
-            await block.save();
         }
+
+        cleanStaleMiners(block);
 
         res.json({
             blockNumber: block.blockNumber,
-            difficulty: block.difficulty,
+            targetDifficulty: block.targetDifficulty,
             reward: block.reward,
+            era: block.era,
             status: block.status,
-            onlineMiners: block.onlineMiners,
+            onlineMiners: block.activeMiners.length,
             totalShares: block.totalShares,
             totalHashes: block.totalHashes
         });
@@ -71,74 +100,245 @@ router.get('/block', auth, async (req, res) => {
     }
 });
 
-// POST /api/mining/start - Start mining session
-router.post('/start', auth, async (req, res) => {
+// POST /api/mining/join - Join the current block's mining pool
+router.post('/join', auth, async (req, res) => {
     try {
         const { mode } = req.body;
 
         if (!mode || !MINING_MODES[mode]) {
-            return res.status(400).json({ error: 'Invalid mining mode. Use: basic, turbo, super, nitro' });
+            return res.status(400).json({ error: 'Invalid mining mode' });
+        }
+
+        const user = req.user;
+
+        // Check if mode is unlocked
+        if (!user.unlockedModes.includes(mode)) {
+            return res.status(403).json({ error: `${mode} mode is locked. Purchase it from the shop.` });
         }
 
         const config = MINING_MODES[mode];
-        const user = req.user;
 
-        // Check energy
-        if (user.energy < config.energyCost) {
+        // Need at least enough energy for 1 tick
+        if (user.energy < config.energyPerTick) {
             return res.status(400).json({
                 error: 'Not enough energy',
-                required: config.energyCost,
+                required: config.energyPerTick,
                 current: user.energy
             });
         }
 
-        // Get or create current block
-        let block = await Block.findOne({ status: { $in: ['waiting', 'mining'] } })
-            .sort({ blockNumber: -1 });
-
+        const block = await getOrCreateActiveBlock();
         if (!block) {
-            const lastBlock = await Block.findOne().sort({ blockNumber: -1 });
-            const nextNumber = lastBlock ? lastBlock.blockNumber + 1 : 1;
-
-            block = new Block({
-                blockNumber: nextNumber,
-                difficulty: 84500 + Math.floor(Math.random() * 10000),
-                reward: 800 + Math.floor(Math.random() * 600),
-                status: 'mining',
-                onlineMiners: Math.floor(Math.random() * 200) + 50
-            });
-            await block.save();
+            return res.status(400).json({ error: 'All tokens have been mined!' });
         }
 
-        // Update block status
-        block.status = 'mining';
-        block.totalShares += 1;
-        block.totalHashes += Math.floor(Math.random() * 1000) + 100;
-        block.onlineMiners = Math.max(block.onlineMiners, Math.floor(Math.random() * 50) + 50);
+        // Remove user from pool if already there (rejoin)
+        block.activeMiners = block.activeMiners.filter(
+            m => m.userId.toString() !== user._id.toString()
+        );
 
-        // Calculate reward
-        const tokensEarned = calculateReward(mode);
-
-        // Deduct energy and add tokens
-        user.energy -= config.energyCost;
-        user.tokens += tokensEarned;
-        user.totalMined += tokensEarned;
-        user.miningSessionsCount += 1;
-
-        // Create mining activity record
-        const activity = new MiningActivity({
+        // Add user to active miners
+        block.activeMiners.push({
             userId: user._id,
-            blockId: block._id,
-            mode,
-            energyConsumed: config.energyCost,
-            tokensEarned
+            telegramId: user.telegramId,
+            joinedAt: new Date(),
+            lastTick: new Date(),
+            mode
         });
 
-        // Handle referral commission (10% to referrer)
+        block.status = 'mining';
+        await block.save();
+
+        res.json({
+            success: true,
+            block: {
+                blockNumber: block.blockNumber,
+                targetDifficulty: block.targetDifficulty,
+                reward: block.reward,
+                era: block.era,
+                onlineMiners: block.activeMiners.length
+            },
+            mode: config.label,
+            energyPerTick: config.energyPerTick,
+            multiplier: config.multiplier
+        });
+    } catch (error) {
+        console.error('Join mining error:', error);
+        res.status(500).json({ error: 'Failed to join mining' });
+    }
+});
+
+// POST /api/mining/tick - Heartbeat: drains energy, keeps miner alive
+router.post('/tick', auth, async (req, res) => {
+    try {
+        const user = req.user;
+        const block = await Block.findOne({ status: 'mining' }).sort({ blockNumber: -1 });
+
+        if (!block) {
+            return res.json({ continue: false, reason: 'No active block' });
+        }
+
+        // Find this user in active miners
+        const minerIdx = block.activeMiners.findIndex(
+            m => m.userId.toString() === user._id.toString()
+        );
+
+        if (minerIdx === -1) {
+            return res.json({ continue: false, reason: 'Not in mining pool' });
+        }
+
+        const miner = block.activeMiners[minerIdx];
+        const config = MINING_MODES[miner.mode];
+
+        // Check energy
+        if (user.energy < config.energyPerTick) {
+            // Remove from pool
+            block.activeMiners.splice(minerIdx, 1);
+            await block.save();
+            return res.json({
+                continue: false,
+                reason: 'Out of energy',
+                energy: user.energy
+            });
+        }
+
+        // Drain energy
+        user.energy -= config.energyPerTick;
+        await user.save();
+
+        // Update tick timestamp and hashcount
+        block.activeMiners[minerIdx].lastTick = new Date();
+        block.totalHashes += Math.floor(Math.random() * 500) + 100;
+        block.totalShares += 1;
+        await block.save();
+
+        res.json({
+            continue: true,
+            energy: user.energy,
+            maxEnergy: user.maxEnergy,
+            onlineMiners: block.activeMiners.length,
+            totalHashes: block.totalHashes
+        });
+    } catch (error) {
+        console.error('Tick error:', error);
+        res.status(500).json({ error: 'Tick failed' });
+    }
+});
+
+// POST /api/mining/submit - Submit a found hash
+router.post('/submit', auth, async (req, res) => {
+    try {
+        const { hash, nonce } = req.body;
+        const user = req.user;
+
+        if (!hash || nonce === undefined) {
+            return res.status(400).json({ error: 'Hash and nonce are required' });
+        }
+
+        const block = await Block.findOne({ status: 'mining' }).sort({ blockNumber: -1 });
+        if (!block) {
+            return res.status(400).json({ error: 'No active block to submit to' });
+        }
+
+        // Verify the hash server-side
+        const { valid, hash: computedHash } = verifyMinedHash(
+            block.blockNumber, nonce, user.telegramId, block.targetDifficulty
+        );
+
+        if (!valid) {
+            return res.status(400).json({
+                error: 'Invalid hash — does not meet difficulty',
+                submitted: hash,
+                computed: computedHash,
+                required: '0'.repeat(block.targetDifficulty) + '...'
+            });
+        }
+
+        // ---- Block found! Distribute rewards ----
+        const tracker = await SupplyTracker.getInstance();
+        let blockReward = block.reward;
+
+        // Cap reward to remaining supply
+        if (!tracker.canMint(blockReward)) {
+            blockReward = Math.max(0, tracker.maxSupply - tracker.totalMinted);
+        }
+
+        if (blockReward <= 0) {
+            return res.status(400).json({ error: 'Supply exhausted. No more tokens to mine.' });
+        }
+
+        // Clean stale miners
+        cleanStaleMiners(block);
+
+        // 50% to finder, 50% to pool
+        const finderReward = Math.round(blockReward * 0.5 * 100) / 100;
+        const poolTotal = blockReward - finderReward;
+
+        // Pool miners = everyone except the finder who was active
+        const poolMiners = block.activeMiners.filter(
+            m => m.userId.toString() !== user._id.toString()
+        );
+        const poolShareEach = poolMiners.length > 0
+            ? Math.round((poolTotal / poolMiners.length) * 100) / 100
+            : 0;
+
+        // If no pool miners, finder gets full reward
+        const actualFinderReward = poolMiners.length > 0 ? finderReward : blockReward;
+
+        // Award finder
+        user.tokens += actualFinderReward;
+        user.totalMined += actualFinderReward;
+        user.miningSessionsCount += 1;
+        await user.save();
+
+        // Create finder activity
+        const finderActivity = new MiningActivity({
+            userId: user._id,
+            blockId: block._id,
+            mode: block.activeMiners.find(m => m.userId.toString() === user._id.toString())?.mode || 'basic',
+            energyConsumed: 0,
+            tokensEarned: actualFinderReward,
+            hashSubmitted: computedHash,
+            nonceUsed: nonce,
+            isBlockFinder: true,
+            shareReward: 0
+        });
+        await finderActivity.save();
+
+        // Award pool miners
+        const poolRewards = [];
+        for (const miner of poolMiners) {
+            const poolUser = await User.findById(miner.userId);
+            if (poolUser) {
+                poolUser.tokens += poolShareEach;
+                poolUser.totalMined += poolShareEach;
+                poolUser.miningSessionsCount += 1;
+                await poolUser.save();
+
+                const activity = new MiningActivity({
+                    userId: poolUser._id,
+                    blockId: block._id,
+                    mode: miner.mode,
+                    energyConsumed: 0,
+                    tokensEarned: poolShareEach,
+                    isBlockFinder: false,
+                    shareReward: poolShareEach
+                });
+                await activity.save();
+
+                poolRewards.push({
+                    userId: poolUser._id,
+                    username: poolUser.username || poolUser.firstName,
+                    reward: poolShareEach
+                });
+            }
+        }
+
+        // Handle referral commission (10% of finder's reward)
         if (user.referredBy) {
             const referrer = await User.findOne({ referralCode: user.referredBy });
             if (referrer) {
-                const commission = Math.round(tokensEarned * 0.10 * 100) / 100;
+                const commission = Math.round(actualFinderReward * 0.10 * 100) / 100;
                 referrer.tokens += commission;
                 referrer.referralEarnings += commission;
                 await referrer.save();
@@ -152,36 +352,93 @@ router.post('/start', auth, async (req, res) => {
             }
         }
 
-        // Check if block should complete (after enough shares)
-        if (block.totalShares >= 50 + Math.floor(Math.random() * 50)) {
-            block.status = 'completed';
-            block.completedAt = new Date();
-            block.minedBy = user._id;
-        }
+        // Update supply tracker
+        const totalRewarded = actualFinderReward + (poolShareEach * poolMiners.length);
+        tracker.recordMint(totalRewarded, block.blockNumber);
+        await tracker.save();
 
-        await Promise.all([user.save(), block.save(), activity.save()]);
+        // Mark block as completed
+        block.status = 'completed';
+        block.completedAt = new Date();
+        block.minedBy = user._id;
+        block.winningHash = computedHash;
+        block.winningNonce = nonce;
+        await block.save();
+
+        // Create next block
+        await getOrCreateActiveBlock();
 
         res.json({
             success: true,
-            mode: config.label,
-            energyConsumed: config.energyCost,
-            tokensEarned,
+            blockNumber: block.blockNumber,
+            hash: computedHash,
+            nonce,
+            finderReward: actualFinderReward,
+            poolMinersCount: poolMiners.length,
+            poolShareEach,
+            totalBlockReward: blockReward,
             newBalance: {
-                energy: user.energy,
-                maxEnergy: user.maxEnergy,
                 tokens: user.tokens,
-                totalMined: user.totalMined
+                totalMined: user.totalMined,
+                energy: user.energy,
+                maxEnergy: user.maxEnergy
             },
+            poolRewards
+        });
+    } catch (error) {
+        console.error('Submit hash error:', error);
+        res.status(500).json({ error: 'Failed to submit hash' });
+    }
+});
+
+// POST /api/mining/leave - Leave the mining pool
+router.post('/leave', auth, async (req, res) => {
+    try {
+        const block = await Block.findOne({ status: 'mining' }).sort({ blockNumber: -1 });
+        if (!block) {
+            return res.json({ success: true });
+        }
+
+        block.activeMiners = block.activeMiners.filter(
+            m => m.userId.toString() !== req.user._id.toString()
+        );
+        await block.save();
+
+        res.json({ success: true, onlineMiners: block.activeMiners.length });
+    } catch (error) {
+        console.error('Leave error:', error);
+        res.status(500).json({ error: 'Failed to leave pool' });
+    }
+});
+
+// GET /api/mining/status - Get user's current mining status
+router.get('/status', auth, async (req, res) => {
+    try {
+        const block = await Block.findOne({ status: { $in: ['waiting', 'mining'] } })
+            .sort({ blockNumber: -1 });
+
+        if (!block) {
+            return res.json({ mining: false });
+        }
+
+        const miner = block.activeMiners.find(
+            m => m.userId.toString() === req.user._id.toString()
+        );
+
+        res.json({
+            mining: !!miner,
+            mode: miner?.mode || null,
+            joinedAt: miner?.joinedAt || null,
             block: {
                 blockNumber: block.blockNumber,
-                status: block.status,
-                totalShares: block.totalShares,
-                totalHashes: block.totalHashes
+                targetDifficulty: block.targetDifficulty,
+                reward: block.reward,
+                onlineMiners: block.activeMiners.length
             }
         });
     } catch (error) {
-        console.error('Mining error:', error);
-        res.status(500).json({ error: 'Mining failed' });
+        console.error('Status error:', error);
+        res.status(500).json({ error: 'Failed to get status' });
     }
 });
 
@@ -196,7 +453,7 @@ router.get('/history', auth, async (req, res) => {
             .sort({ createdAt: -1 })
             .skip(skip)
             .limit(limit)
-            .populate('blockId', 'blockNumber difficulty');
+            .populate('blockId', 'blockNumber targetDifficulty');
 
         const total = await MiningActivity.countDocuments({ userId: req.user._id });
 
@@ -207,6 +464,8 @@ router.get('/history', auth, async (req, res) => {
                 mode: a.mode,
                 energyConsumed: a.energyConsumed,
                 tokensEarned: a.tokensEarned,
+                isBlockFinder: a.isBlockFinder,
+                hashSubmitted: a.hashSubmitted,
                 createdAt: a.createdAt
             })),
             pagination: { page, limit, total, pages: Math.ceil(total / limit) }
@@ -228,9 +487,11 @@ router.get('/last-blocks', auth, async (req, res) => {
         res.json({
             blocks: blocks.map(b => ({
                 blockNumber: b.blockNumber,
-                difficulty: b.difficulty,
+                targetDifficulty: b.targetDifficulty,
                 reward: b.reward,
+                era: b.era,
                 minedBy: b.minedBy?.username || b.minedBy?.firstName || 'Anonymous',
+                winningHash: b.winningHash ? b.winningHash.substring(0, 16) + '...' : null,
                 totalShares: b.totalShares,
                 totalHashes: b.totalHashes,
                 completedAt: b.completedAt
@@ -244,13 +505,15 @@ router.get('/last-blocks', auth, async (req, res) => {
 
 // GET /api/mining/modes - Get available mining modes
 router.get('/modes', auth, async (req, res) => {
+    const user = req.user;
     res.json({
         modes: Object.entries(MINING_MODES).map(([key, config]) => ({
             id: key,
             label: config.label,
-            energyCost: config.energyCost,
+            energyPerTick: config.energyPerTick,
             multiplier: config.multiplier,
-            available: req.user.energy >= config.energyCost
+            unlocked: user.unlockedModes.includes(key),
+            available: user.unlockedModes.includes(key) && user.energy >= config.energyPerTick
         }))
     });
 });

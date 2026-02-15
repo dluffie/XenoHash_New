@@ -3,6 +3,7 @@ const auth = require('../middleware/auth');
 const User = require('../models/User');
 const Block = require('../models/Block');
 const MiningActivity = require('../models/MiningActivity');
+const SupplyTracker = require('../models/SupplyTracker');
 
 const router = express.Router();
 
@@ -23,6 +24,8 @@ router.get('/profile', auth, async (req, res) => {
             tokens: user.tokens,
             totalMined: user.totalMined,
             miningSessionsCount: user.miningSessionsCount,
+            unlockedModes: user.unlockedModes,
+            tonWalletAddress: user.tonWalletAddress,
             referralCode: user.referralCode,
             referralCount: user.referralCount,
             referralEarnings: user.referralEarnings,
@@ -85,24 +88,21 @@ router.post('/energy/increase', auth, async (req, res) => {
 router.get('/stats', auth, async (req, res) => {
     try {
         const totalUsers = await User.countDocuments();
-        const totalBlocks = await Block.countDocuments();
         const completedBlocks = await Block.countDocuments({ status: 'completed' });
-        const totalTokensMined = await User.aggregate([
-            { $group: { _id: null, total: { $sum: '$totalMined' } } }
-        ]);
+        const tracker = await SupplyTracker.getInstance();
 
-        const TOTAL_SUPPLY = 2000000000;
-        const TOTAL_BLOCKS_TARGET = 2000000;
-        const totalMined = totalTokensMined[0]?.total || 0;
-        const minedPercentage = Math.min((totalMined / TOTAL_SUPPLY) * 100, 100);
+        const TOTAL_SUPPLY = 1_000_000_000;
+        const totalMinted = tracker.totalMinted;
+        const minedPercentage = Math.min((totalMinted / TOTAL_SUPPLY) * 100, 100);
 
         res.json({
             totalMined: Math.round(minedPercentage * 10) / 10,
             totalIssue: TOTAL_SUPPLY,
-            blocksCreated: `${completedBlocks} / ${TOTAL_BLOCKS_TARGET}`,
+            blocksCreated: completedBlocks,
             totalHolders: totalUsers,
             startDate: '15 February',
-            totalTokensMined: Math.round(totalMined * 100) / 100
+            totalTokensMinted: Math.round(totalMinted * 100) / 100,
+            remainingSupply: Math.round((TOTAL_SUPPLY - totalMinted) * 100) / 100
         });
     } catch (error) {
         console.error('Stats error:', error);

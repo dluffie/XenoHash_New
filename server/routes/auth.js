@@ -103,6 +103,8 @@ router.post('/telegram', async (req, res) => {
                 tokens: user.tokens,
                 totalMined: user.totalMined,
                 miningSessionsCount: user.miningSessionsCount,
+                unlockedModes: user.unlockedModes,
+                tonWalletAddress: user.tonWalletAddress,
                 referralCode: user.referralCode,
                 referralCount: user.referralCount,
                 referralEarnings: user.referralEarnings,

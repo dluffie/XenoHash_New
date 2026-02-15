@@ -1,20 +1,31 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useUser } from '../context/UserContext';
-import { getCurrentBlock, startMining, getLastBlocks } from '../api';
+import { getCurrentBlock, joinMining, miningTick, submitHash, leaveMining, getLastBlocks } from '../api';
 
 export default function MiningPage() {
     const { user, updateUser } = useUser();
     const [block, setBlock] = useState(null);
     const [lastBlocks, setLastBlocks] = useState([]);
-    const [mining, setMining] = useState(false);
-    const [miningResult, setMiningResult] = useState(null);
     const [selectedMode, setSelectedMode] = useState('basic');
 
+    // Mining state
+    const [isMining, setIsMining] = useState(false);
+    const [hashrate, setHashrate] = useState(0);
+    const [noncesTried, setNoncesTried] = useState(0);
+    const [elapsed, setElapsed] = useState(0);
+    const [miningResult, setMiningResult] = useState(null);
+    const [statusText, setStatusText] = useState('Ready to mine');
+
+    // Refs for worker and tick interval
+    const workerRef = useRef(null);
+    const tickIntervalRef = useRef(null);
+    const isMiningRef = useRef(false);
+
     const modes = [
-        { id: 'basic', label: 'Basic', cost: 100, multiplier: '1x' },
-        { id: 'turbo', label: 'Turbo', cost: 200, multiplier: '2x' },
-        { id: 'super', label: 'Super', cost: 400, multiplier: '4x' },
-        { id: 'nitro', label: 'Nitro', cost: 800, multiplier: '8x' }
+        { id: 'basic', label: 'Basic', cost: 10, multiplier: '1x' },
+        { id: 'turbo', label: 'Turbo', cost: 20, multiplier: '2x' },
+        { id: 'super', label: 'Super', cost: 40, multiplier: '4x' },
+        { id: 'nitro', label: 'Nitro', cost: 80, multiplier: '8x' }
     ];
 
     const fetchBlockData = useCallback(async () => {
@@ -36,39 +47,156 @@ export default function MiningPage() {
         return () => clearInterval(interval);
     }, [fetchBlockData]);
 
-    const handleMine = async () => {
-        if (mining) return;
+    // Cleanup worker on unmount
+    useEffect(() => {
+        return () => {
+            stopMining();
+        };
+    }, []);
+
+    const stopMining = useCallback(() => {
+        isMiningRef.current = false;
+        setIsMining(false);
+        setStatusText('Mining stopped');
+
+        // Terminate worker
+        if (workerRef.current) {
+            workerRef.current.postMessage({ type: 'stop' });
+            workerRef.current.terminate();
+            workerRef.current = null;
+        }
+
+        // Clear tick interval
+        if (tickIntervalRef.current) {
+            clearInterval(tickIntervalRef.current);
+            tickIntervalRef.current = null;
+        }
+
+        // Leave the pool
+        leaveMining().catch(() => { });
+    }, []);
+
+    const handleStartMining = async () => {
+        if (isMining) {
+            stopMining();
+            return;
+        }
+
         const modeConfig = modes.find(m => m.id === selectedMode);
         if (!user || user.energy < modeConfig.cost) return;
 
-        setMining(true);
+        // Check if mode is unlocked
+        if (user.unlockedModes && !user.unlockedModes.includes(selectedMode)) {
+            setMiningResult({ error: `${selectedMode} mode is locked. Buy it in the Service tab.` });
+            return;
+        }
+
+        setIsMining(true);
+        isMiningRef.current = true;
         setMiningResult(null);
+        setHashrate(0);
+        setNoncesTried(0);
+        setElapsed(0);
+        setStatusText('Joining mining pool...');
 
         try {
-            const res = await startMining(selectedMode);
-            setMiningResult(res.data);
-            updateUser(res.data.newBalance);
-            if (res.data.block) {
-                setBlock(prev => ({ ...prev, ...res.data.block }));
-            }
-            // Refresh blocks after mining
-            setTimeout(fetchBlockData, 1000);
+            // Join the mining pool
+            const joinRes = await joinMining(selectedMode);
+            const { block: joinedBlock } = joinRes.data;
+
+            setBlock(prev => ({ ...prev, ...joinedBlock }));
+            setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
+
+            // Start the Web Worker
+            const worker = new Worker(
+                new URL('../workers/miningWorker.js', import.meta.url),
+                { type: 'module' }
+            );
+            workerRef.current = worker;
+
+            worker.onmessage = async (e) => {
+                const msg = e.data;
+
+                if (msg.type === 'progress') {
+                    setHashrate(msg.hashrate);
+                    setNoncesTried(msg.hashCount);
+                    setElapsed(msg.elapsed);
+                }
+
+                if (msg.type === 'found') {
+                    // Hash found! Submit to server
+                    setStatusText('Hash found! Submitting to server...');
+                    setHashrate(0);
+
+                    try {
+                        const submitRes = await submitHash(msg.hash, msg.nonce);
+                        setMiningResult(submitRes.data);
+                        updateUser(submitRes.data.newBalance);
+                        setStatusText(`🎉 Block #${submitRes.data.blockNumber} mined! +${submitRes.data.finderReward} XNH`);
+                    } catch (err) {
+                        const errMsg = err.response?.data?.error || 'Submit failed';
+                        setMiningResult({ error: errMsg });
+                        setStatusText('Submit failed: ' + errMsg);
+                    }
+
+                    stopMining();
+                    setTimeout(fetchBlockData, 1000);
+                }
+            };
+
+            // Start hashing
+            worker.postMessage({
+                type: 'start',
+                data: {
+                    blockNumber: joinedBlock.blockNumber,
+                    telegramId: user.telegramId,
+                    targetDifficulty: joinedBlock.targetDifficulty
+                }
+            });
+
+            // Energy tick every 2 seconds
+            tickIntervalRef.current = setInterval(async () => {
+                if (!isMiningRef.current) return;
+
+                try {
+                    const tickRes = await miningTick();
+
+                    if (!tickRes.data.continue) {
+                        // Out of energy or no active block
+                        setStatusText(`Mining stopped: ${tickRes.data.reason}`);
+                        stopMining();
+                        return;
+                    }
+
+                    // Update user energy
+                    updateUser({
+                        energy: tickRes.data.energy,
+                        maxEnergy: tickRes.data.maxEnergy
+                    });
+                } catch (err) {
+                    console.error('Tick error:', err);
+                }
+            }, 2000);
+
         } catch (err) {
-            const msg = err.response?.data?.error || 'Mining failed';
+            const msg = err.response?.data?.error || 'Failed to join mining';
             setMiningResult({ error: msg });
-        } finally {
-            setMining(false);
+            setStatusText('Failed: ' + msg);
+            stopMining();
         }
     };
 
     const currentMode = modes.find(m => m.id === selectedMode);
-    const canMine = user && user.energy >= currentMode.cost;
+    const canMine = user && user.energy >= currentMode.cost
+        && (!user.unlockedModes || user.unlockedModes.includes(selectedMode));
+
+    const energyPercent = user ? (user.energy / user.maxEnergy) * 100 : 0;
 
     return (
         <div className="page mining-page">
             <div className="section-title">
                 <span className="title-icon">⛏️</span>
-                Information
+                Mining
             </div>
 
             {/* Energy & Token Overview */}
@@ -79,7 +207,7 @@ export default function MiningPage() {
                         <div className="energy-bar">
                             <div
                                 className="energy-fill"
-                                style={{ width: `${user ? (user.energy / user.maxEnergy) * 100 : 0}%` }}
+                                style={{ width: `${energyPercent}%` }}
                             />
                         </div>
                     </div>
@@ -101,72 +229,115 @@ export default function MiningPage() {
                         </div>
                         <div className="block-item">
                             <span className="block-label">Difficulty</span>
-                            <span className="block-value">{block.difficulty?.toLocaleString()}</span>
+                            <span className="block-value">{'0'.repeat(block.targetDifficulty || 4)}...</span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Reward</span>
-                            <span className="block-value">{block.reward?.toLocaleString()}</span>
+                            <span className="block-value">{block.reward?.toLocaleString()} XNH</span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Online</span>
-                            <span className="block-value highlight">{block.onlineMiners}</span>
+                            <span className="block-value highlight">{block.onlineMiners || 0}</span>
                         </div>
                         <div className="block-item">
-                            <span className="block-label">Status</span>
-                            <span className={`block-value status-badge ${block.status}`}>{block.status}</span>
+                            <span className="block-label">Era</span>
+                            <span className="block-value">{block.era || 0}</span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Shares</span>
                             <span className="block-value">{block.totalShares}</span>
                         </div>
-                        <div className="block-item">
-                            <span className="block-label">Hashes</span>
-                            <span className="block-value">{block.totalHashes}</span>
-                        </div>
-                        <div className="block-item">
-                            <span className="block-label">Profit</span>
-                            <span className="block-value">{miningResult?.tokensEarned?.toFixed(2) || '0'}</span>
-                        </div>
                     </div>
                 </div>
             )}
 
+            {/* Live Mining Stats */}
+            {isMining && (
+                <div className="info-card mining-live-card">
+                    <div className="mining-live-title">⚡ Mining in Progress</div>
+                    <div className="mining-stats-grid">
+                        <div className="mining-stat">
+                            <span className="mining-stat-value">{hashrate.toLocaleString()}</span>
+                            <span className="mining-stat-label">H/s</span>
+                        </div>
+                        <div className="mining-stat">
+                            <span className="mining-stat-value">{noncesTried.toLocaleString()}</span>
+                            <span className="mining-stat-label">Hashes</span>
+                        </div>
+                        <div className="mining-stat">
+                            <span className="mining-stat-value">{elapsed}s</span>
+                            <span className="mining-stat-label">Time</span>
+                        </div>
+                    </div>
+                    <div className="mining-progress-bar">
+                        <div className="mining-progress-fill mining-pulse" />
+                    </div>
+                </div>
+            )}
+
+            {/* Status Text */}
+            <div className="mining-status-text">{statusText}</div>
+
             {/* Mining Mode Selection */}
             <div className="mode-selector">
-                {modes.map(mode => (
-                    <button
-                        key={mode.id}
-                        className={`mode-btn ${selectedMode === mode.id ? 'active' : ''} ${user?.energy < mode.cost ? 'disabled' : ''}`}
-                        onClick={() => setSelectedMode(mode.id)}
-                        disabled={user?.energy < mode.cost}
-                    >
-                        {mode.label}
-                        <span className="mode-cost">{mode.cost}⚡</span>
-                    </button>
-                ))}
+                {modes.map(mode => {
+                    const isLocked = user?.unlockedModes && !user.unlockedModes.includes(mode.id);
+                    return (
+                        <button
+                            key={mode.id}
+                            className={`mode-btn ${selectedMode === mode.id ? 'active' : ''} ${isLocked ? 'locked' : ''} ${user?.energy < mode.cost ? 'disabled' : ''}`}
+                            onClick={() => !isLocked && setSelectedMode(mode.id)}
+                            disabled={isLocked || isMining}
+                        >
+                            {isLocked && <span className="lock-icon">🔒</span>}
+                            {mode.label}
+                            <span className="mode-cost">{mode.cost}⚡/tick</span>
+                        </button>
+                    );
+                })}
             </div>
 
-            {/* Start Mining Button */}
+            {/* Start/Stop Mining Button */}
             <button
-                className={`mine-btn ${mining ? 'mining-active' : ''} ${!canMine ? 'disabled' : ''}`}
-                onClick={handleMine}
-                disabled={!canMine || mining}
+                className={`mine-btn ${isMining ? 'mining-active stop-btn' : ''} ${!canMine && !isMining ? 'disabled' : ''}`}
+                onClick={handleStartMining}
+                disabled={!canMine && !isMining}
             >
-                {mining ? (
+                {isMining ? (
                     <span className="mining-spinner">
-                        <span className="spinner"></span> Mining...
+                        <span className="spinner"></span> Stop Mining
                     </span>
                 ) : (
-                    'Start Mining'
+                    '⛏️ Start Mining'
                 )}
             </button>
 
-            {/* Mining Result Toast */}
+            {/* Mining Result */}
             {miningResult && !miningResult.error && (
                 <div className="mining-result success">
-                    <span className="result-icon">🎉</span>
-                    +{miningResult.tokensEarned?.toFixed(2)} XNH
-                    <span className="result-mode">({miningResult.mode})</span>
+                    <div className="result-header">
+                        <span className="result-icon">🎉</span>
+                        Block #{miningResult.blockNumber} Mined!
+                    </div>
+                    <div className="result-details">
+                        <div className="result-row">
+                            <span>Your Reward (Finder 50%)</span>
+                            <span className="result-amount">+{miningResult.finderReward?.toFixed(2)} XNH</span>
+                        </div>
+                        {miningResult.poolMinersCount > 0 && (
+                            <div className="result-row">
+                                <span>Pool Miners ({miningResult.poolMinersCount})</span>
+                                <span className="result-amount">{miningResult.poolShareEach?.toFixed(2)} XNH each</span>
+                            </div>
+                        )}
+                        <div className="result-row total">
+                            <span>Total Block Reward</span>
+                            <span className="result-amount">{miningResult.totalBlockReward?.toFixed(2)} XNH</span>
+                        </div>
+                    </div>
+                    <div className="result-hash">
+                        Hash: {miningResult.hash?.substring(0, 24)}...
+                    </div>
                 </div>
             )}
             {miningResult?.error && (
@@ -192,8 +363,8 @@ export default function MiningPage() {
                                 <span className="block-miner">{b.minedBy}</span>
                             </div>
                             <div className="block-row-right">
-                                <span className="block-reward">+{b.reward}</span>
-                                <span className="block-shares">{b.totalShares} shares</span>
+                                <span className="block-reward">+{b.reward} XNH</span>
+                                <span className="block-hash">{b.winningHash || ''}</span>
                             </div>
                         </div>
                     ))

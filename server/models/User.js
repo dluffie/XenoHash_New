@@ -43,6 +43,16 @@ const userSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  // Unlocked mining modes (purchased via TON)
+  unlockedModes: {
+    type: [String],
+    default: ['basic']
+  },
+  // TON wallet
+  tonWalletAddress: {
+    type: String,
+    default: null
+  },
   referralCode: {
     type: String,
     unique: true
@@ -70,7 +80,7 @@ const userSchema = new mongoose.Schema({
 });
 
 // Generate unique referral code before saving
-userSchema.pre('save', function(next) {
+userSchema.pre('save', function (next) {
   if (!this.referralCode) {
     this.referralCode = 'XH' + this.telegramId.slice(-4) + Math.random().toString(36).substring(2, 6).toUpperCase();
   }
@@ -78,16 +88,16 @@ userSchema.pre('save', function(next) {
 });
 
 // Method to calculate and apply energy regeneration (1 per minute)
-userSchema.methods.regenerateEnergy = function() {
+userSchema.methods.regenerateEnergy = function () {
   const now = new Date();
   const minutesPassed = Math.floor((now - this.lastEnergyUpdate) / 60000);
-  
+
   if (minutesPassed > 0) {
     const newEnergy = Math.min(this.energy + minutesPassed, this.maxEnergy);
     this.energy = newEnergy;
     this.lastEnergyUpdate = now;
   }
-  
+
   return this;
 };
 

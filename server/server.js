@@ -5,6 +5,8 @@ const path = require('path');
 require('dotenv').config();
 
 const Block = require('./models/Block');
+const SupplyTracker = require('./models/SupplyTracker');
+const { calculateBlockReward, getEra, getTargetDifficulty } = require('./utils/miningUtils');
 
 const app = express();
 
@@ -19,6 +21,7 @@ app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/referrals', require('./routes/referrals'));
 app.use('/api/leaderboard', require('./routes/leaderboard'));
 app.use('/api/user', require('./routes/user'));
+app.use('/api/shop', require('./routes/shop'));
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -34,20 +37,26 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(clientBuildPath, 'index.html'));
 });
 
-// Seed initial block if needed
-async function seedInitialBlock() {
+// Seed initial block and supply tracker
+async function seedInitialData() {
     try {
+        // Seed supply tracker
+        await SupplyTracker.getInstance();
+        console.log('✅ Supply tracker ready');
+
+        // Seed initial block if needed
         const blockCount = await Block.countDocuments();
         if (blockCount === 0) {
+            const blockNumber = 1;
             const block = new Block({
-                blockNumber: 1,
-                difficulty: 84500,
-                reward: 1100,
-                status: 'waiting',
-                onlineMiners: Math.floor(Math.random() * 100) + 50
+                blockNumber,
+                targetDifficulty: getTargetDifficulty(blockNumber),
+                reward: calculateBlockReward(blockNumber),
+                era: getEra(blockNumber),
+                status: 'waiting'
             });
             await block.save();
-            console.log('✅ Initial block created');
+            console.log('✅ Initial block created (Block #1, Reward: 1000 XNH, Difficulty: 4 zeros)');
         }
     } catch (error) {
         console.error('Seed error:', error);
@@ -60,7 +69,7 @@ const PORT = process.env.PORT || 5000;
 mongoose.connect(process.env.MONGODB_URI, { dbName: 'xenoHash' })
     .then(async () => {
         console.log('✅ Connected to MongoDB');
-        await seedInitialBlock();
+        await seedInitialData();
         app.listen(PORT, () => {
             console.log(`🚀 XenoHash server running on port ${PORT}`);
         });

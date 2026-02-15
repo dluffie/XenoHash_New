@@ -25,6 +25,24 @@ const miningActivitySchema = new mongoose.Schema({
         type: Number,
         required: true
     },
+    // PoW specific fields
+    hashSubmitted: {
+        type: String,
+        default: null
+    },
+    nonceUsed: {
+        type: Number,
+        default: null
+    },
+    isBlockFinder: {
+        type: Boolean,
+        default: false
+    },
+    // Pool share reward (subset of tokensEarned for non-finders)
+    shareReward: {
+        type: Number,
+        default: 0
+    },
     createdAt: {
         type: Date,
         default: Date.now

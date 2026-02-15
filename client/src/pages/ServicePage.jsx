@@ -1,39 +1,170 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react';
 import { useUser } from '../context/UserContext';
-import { increaseEnergy } from '../api';
+import { getShopItems, purchaseItem, connectWallet } from '../api';
+
+// TON transaction amount in nanoTON (0.5 TON = 500000000 nanoTON)
+const TON_PRICE_NANO = '500000000';
 
 export default function ServicePage() {
-    const { user, updateUser } = useUser();
-    const [selectedMode, setSelectedMode] = useState('basic');
-    const [upgrading, setUpgrading] = useState(false);
+    const { user, updateUser, refreshUser } = useUser();
+    const [tonConnectUI] = useTonConnectUI();
+    const tonAddress = useTonAddress();
+
+    const [shopItems, setShopItems] = useState([]);
+    const [walletAddress, setWalletAddress] = useState(null); // Receiving wallet
+    const [purchasing, setPurchasing] = useState(null);
     const [message, setMessage] = useState(null);
+    const [selectedMode, setSelectedMode] = useState('basic');
 
-    const modes = [
-        { id: 'basic', label: 'Basic', cost: 100, multiplier: '1x', description: 'Standard mining power with lowest energy cost', unlocked: true },
-        { id: 'turbo', label: 'Turbo', cost: 200, multiplier: '2x', description: '2x mining power for double the energy', unlocked: true },
-        { id: 'super', label: 'Super', cost: 400, multiplier: '4x', description: '4x mining power for serious miners', unlocked: (user?.totalMined || 0) >= 5000, reqText: 'Mine 5,000 tokens' },
-        { id: 'nitro', label: 'Nitro', cost: 800, multiplier: '8x', description: 'Maximum power! 8x rewards for 8x energy', unlocked: (user?.totalMined || 0) >= 20000, reqText: 'Mine 20,000 tokens' }
-    ];
+    // Fetch shop items
+    useEffect(() => {
+        loadShopItems();
+    }, []);
 
-    const handleIncreaseEnergy = async () => {
-        if (upgrading) return;
-        setUpgrading(true);
-        setMessage(null);
+    // Save wallet address to server when connected
+    useEffect(() => {
+        if (tonAddress) {
+            connectWallet(tonAddress).catch(console.error);
+        }
+    }, [tonAddress]);
+
+    const loadShopItems = async () => {
         try {
-            const res = await increaseEnergy();
-            updateUser(res.data);
-            setMessage({ type: 'success', text: 'Max energy increased by +2000!' });
+            const res = await getShopItems();
+            setShopItems(res.data.items || []);
+            setWalletAddress(res.data.walletAddress);
         } catch (err) {
-            setMessage({ type: 'error', text: err.response?.data?.error || 'Failed to upgrade' });
+            console.error('Failed to load shop:', err);
+        }
+    };
+
+    const handlePurchase = async (itemId) => {
+        if (purchasing) return;
+
+        if (!tonAddress) {
+            // Prompt wallet connection
+            try {
+                await tonConnectUI.openModal();
+            } catch (err) {
+                setMessage({ type: 'error', text: 'Please connect your wallet first' });
+            }
+            return;
+        }
+
+        if (!walletAddress) {
+            setMessage({ type: 'error', text: 'Shop wallet not configured. Contact admin.' });
+            return;
+        }
+
+        setPurchasing(itemId);
+        setMessage(null);
+
+        try {
+            // Send TON transaction via TON Connect
+            const transaction = {
+                validUntil: Math.floor(Date.now() / 1000) + 600, // 10 min
+                messages: [
+                    {
+                        address: walletAddress,
+                        amount: TON_PRICE_NANO // 0.5 TON
+                    }
+                ]
+            };
+
+            const result = await tonConnectUI.sendTransaction(transaction);
+
+            // Transaction sent — notify server with BOC
+            const boc = result.boc;
+            const res = await purchaseItem(itemId, boc);
+
+            if (res.data.success) {
+                // Update user data
+                if (res.data.energy !== undefined) {
+                    updateUser({
+                        energy: res.data.energy,
+                        maxEnergy: res.data.maxEnergy
+                    });
+                }
+                if (res.data.unlockedModes) {
+                    updateUser({ unlockedModes: res.data.unlockedModes });
+                }
+
+                const item = shopItems.find(i => i.id === itemId);
+                setMessage({ type: 'success', text: `✅ ${item?.label || 'Item'} purchased successfully!` });
+
+                // Refresh shop items
+                loadShopItems();
+                refreshUser();
+            }
+        } catch (err) {
+            if (err?.message?.includes('User rejected')) {
+                setMessage({ type: 'error', text: 'Transaction cancelled by user' });
+            } else {
+                const errMsg = err.response?.data?.error || err.message || 'Purchase failed';
+                setMessage({ type: 'error', text: errMsg });
+            }
         } finally {
-            setUpgrading(false);
+            setPurchasing(null);
+        }
+    };
+
+    const handleConnectWallet = async () => {
+        try {
+            if (tonAddress) {
+                await tonConnectUI.disconnect();
+            } else {
+                await tonConnectUI.openModal();
+            }
+        } catch (err) {
+            console.error('Wallet connection error:', err);
         }
     };
 
     const energyPercent = user ? (user.energy / user.maxEnergy) * 100 : 0;
 
+    const modes = [
+        { id: 'basic', label: 'Basic', cost: 10, multiplier: '1x', description: 'Standard mining power with lowest energy cost' },
+        { id: 'turbo', label: 'Turbo', cost: 20, multiplier: '2x', description: '2x mining power — double the hashrate' },
+        { id: 'super', label: 'Super', cost: 40, multiplier: '4x', description: '4x mining power for serious miners' },
+        { id: 'nitro', label: 'Nitro', cost: 80, multiplier: '8x', description: 'Maximum power! 8x hashrate' }
+    ];
+
     return (
         <div className="page service-page">
+            {/* Wallet Connection */}
+            <div className="section-title">
+                <span className="title-icon">💎</span>
+                TON Wallet
+            </div>
+
+            <div className="info-card wallet-card">
+                <div className="wallet-status">
+                    {tonAddress ? (
+                        <>
+                            <div className="wallet-connected">
+                                <span className="wallet-dot connected"></span>
+                                <span className="wallet-label">Connected</span>
+                            </div>
+                            <div className="wallet-address">
+                                {tonAddress.substring(0, 6)}...{tonAddress.substring(tonAddress.length - 4)}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="wallet-disconnected">
+                            <span className="wallet-dot"></span>
+                            <span className="wallet-label">No wallet connected</span>
+                        </div>
+                    )}
+                </div>
+                <button
+                    className={`wallet-btn ${tonAddress ? 'disconnect' : 'connect'}`}
+                    onClick={handleConnectWallet}
+                >
+                    {tonAddress ? 'Disconnect' : '🔗 Connect Wallet'}
+                </button>
+            </div>
+
             {/* Energy Section */}
             <div className="section-title">
                 <span className="title-icon">⚡</span>
@@ -56,48 +187,68 @@ export default function ServicePage() {
                 </div>
             </div>
 
-            <p className="restore-text">
-                Restore energy by completing tasks or using tokens ↓
-            </p>
-
-            <button
-                className={`increase-btn ${upgrading ? 'loading' : ''}`}
-                onClick={handleIncreaseEnergy}
-                disabled={upgrading}
-            >
-                {upgrading ? 'Upgrading...' : 'Increase maximum energy +2000'}
-            </button>
-
-            <p className="cost-hint">Costs 1,000 XNH tokens</p>
-
-            {message && (
-                <div className={`toast-message ${message.type}`}>
-                    {message.type === 'success' ? '✅' : '⚠️'} {message.text}
-                </div>
-            )}
-
-            {/* Mining Mode Section */}
-            <div className="section-title" style={{ marginTop: '2rem' }}>
-                <span className="title-icon">⛏️</span>
-                Mining mode
+            {/* Shop Items */}
+            <div className="section-title" style={{ marginTop: '1.5rem' }}>
+                <span className="title-icon">🛒</span>
+                Shop (0.5 TON each)
             </div>
 
-            <div className="mode-tabs">
-                {modes.map(mode => (
-                    <button
-                        key={mode.id}
-                        className={`mode-tab ${selectedMode === mode.id ? 'active' : ''} ${!mode.unlocked ? 'locked' : ''}`}
-                        onClick={() => mode.unlocked && setSelectedMode(mode.id)}
-                    >
-                        {mode.label}
-                        {!mode.unlocked && <span className="lock-icon">🔒</span>}
-                    </button>
+            <div className="shop-grid">
+                {shopItems.map(item => (
+                    <div key={item.id} className={`shop-item ${item.purchased ? 'purchased' : ''}`}>
+                        <div className="shop-item-header">
+                            <span className="shop-item-icon">{item.icon}</span>
+                            <span className="shop-item-name">{item.label}</span>
+                        </div>
+                        <p className="shop-item-desc">{item.description}</p>
+                        <div className="shop-item-footer">
+                            <span className="shop-item-price">💎 {item.tonPrice} TON</span>
+                            <button
+                                className={`shop-buy-btn ${purchasing === item.id ? 'loading' : ''} ${item.purchased ? 'purchased' : ''}`}
+                                onClick={() => handlePurchase(item.id)}
+                                disabled={purchasing || item.purchased}
+                            >
+                                {item.purchased ? '✅ Owned' :
+                                    purchasing === item.id ? 'Processing...' :
+                                        !tonAddress ? '🔗 Connect & Buy' : 'Buy'}
+                            </button>
+                        </div>
+                    </div>
                 ))}
             </div>
 
-            {/* Selected Mode Details */}
+            {/* Message Toast */}
+            {message && (
+                <div className={`toast-message ${message.type}`}>
+                    {message.text}
+                </div>
+            )}
+
+            {/* Mining Mode Preview */}
+            <div className="section-title" style={{ marginTop: '1.5rem' }}>
+                <span className="title-icon">⛏️</span>
+                Mining Modes
+            </div>
+
+            <div className="mode-tabs">
+                {modes.map(mode => {
+                    const isLocked = user?.unlockedModes && !user.unlockedModes.includes(mode.id);
+                    return (
+                        <button
+                            key={mode.id}
+                            className={`mode-tab ${selectedMode === mode.id ? 'active' : ''} ${isLocked ? 'locked' : ''}`}
+                            onClick={() => setSelectedMode(mode.id)}
+                        >
+                            {mode.label}
+                            {isLocked && <span className="lock-icon">🔒</span>}
+                        </button>
+                    );
+                })}
+            </div>
+
             {(() => {
                 const mode = modes.find(m => m.id === selectedMode);
+                const isLocked = user?.unlockedModes && !user.unlockedModes.includes(mode.id);
                 return (
                     <div className="info-card mode-detail-card">
                         <div className="mode-detail-header">
@@ -107,7 +258,7 @@ export default function ServicePage() {
                         <p className="mode-description">{mode.description}</p>
                         <div className="mode-stats">
                             <div className="mode-stat">
-                                <span className="stat-label">Energy Cost</span>
+                                <span className="stat-label">Energy/Tick</span>
                                 <span className="stat-value">{mode.cost} ⚡</span>
                             </div>
                             <div className="mode-stat">
@@ -115,9 +266,9 @@ export default function ServicePage() {
                                 <span className="stat-value">{mode.multiplier}</span>
                             </div>
                         </div>
-                        {!mode.unlocked && (
+                        {isLocked && (
                             <div className="unlock-requirement">
-                                🔒 Requires: {mode.reqText}
+                                🔒 Purchase this mode for 0.5 TON above
                             </div>
                         )}
                     </div>
@@ -125,8 +276,7 @@ export default function ServicePage() {
             })()}
 
             <p className="mining-power-note">
-                Your mining power can be increased by about 8 times using various modes.
-                Please note that your device may heat up.
+                Higher modes increase your hashrate by the multiplier shown. Energy drains faster with higher modes.
             </p>
         </div>
     );

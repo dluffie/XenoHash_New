@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { TonConnectUIProvider } from '@tonconnect/ui-react';
 import { UserProvider, useUser } from './context/UserContext';
 import MiningPage from './pages/MiningPage';
 import ServicePage from './pages/ServicePage';
@@ -14,6 +15,9 @@ const TABS = [
   { id: 'statistics', label: 'Statistics', icon: '📊' },
   { id: 'token', label: 'Token', icon: '💎' }
 ];
+
+// TON Connect manifest URL — update this to your deployed URL
+const manifestUrl = window.location.origin + '/tonconnect-manifest.json';
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState('mining');
@@ -91,8 +95,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <UserProvider>
-      <AppContent />
-    </UserProvider>
+    <TonConnectUIProvider manifestUrl={manifestUrl}>
+      <UserProvider>
+        <AppContent />
+      </UserProvider>
+    </TonConnectUIProvider>
   );
 }
