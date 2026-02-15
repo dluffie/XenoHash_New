@@ -486,13 +486,19 @@ router.get('/last-blocks', auth, async (req, res) => {
             .populate('minedBy', 'username firstName');
 
         // Build previous hash map
-        const blockNumbers = blocks.map(b => b.blockNumber);
-        const prevBlocks = await Block.find({
-            blockNumber: { $in: blockNumbers.map(n => n - 1) },
-            status: 'completed'
-        }).select('blockNumber winningHash');
         const prevHashMap = {};
-        prevBlocks.forEach(pb => { prevHashMap[pb.blockNumber + 1] = pb.winningHash; });
+        try {
+            const blockNumbers = blocks.map(b => b.blockNumber);
+            if (blockNumbers.length > 0) {
+                const prevBlocks = await Block.find({
+                    blockNumber: { $in: blockNumbers.map(n => n - 1) },
+                    status: 'completed'
+                }).select('blockNumber winningHash');
+                prevBlocks.forEach(pb => { prevHashMap[pb.blockNumber + 1] = pb.winningHash; });
+            }
+        } catch (err) {
+            console.error('Prev hash lookup error (non-fatal):', err);
+        }
 
         res.json({
             blocks: blocks.map(b => ({

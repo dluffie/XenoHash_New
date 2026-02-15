@@ -31,11 +31,51 @@ export default function MiningPage() {
         { id: 'nitro', label: 'Nitro', cost: 80, multiplier: '8x' }
     ];
 
-    // Fetch block data ... (omitted for brevity, keep existing)
+    // Fetch block data
+    const fetchBlockData = async () => {
+        try {
+            const blockRes = await getCurrentBlock();
+            setBlock(blockRes.data);
+        } catch (err) {
+            console.error('Failed to fetch current block:', err);
+        }
 
-    // ... (keep useEffects)
+        try {
+            const blocksRes = await getLastBlocks();
+            setLastBlocks(blocksRes.data.blocks || []);
+        } catch (err) {
+            console.error('Failed to fetch last blocks:', err);
+        }
+    };
 
-    // Kill the current worker ... (keep existing)
+    useEffect(() => {
+        fetchBlockData();
+        const interval = setInterval(fetchBlockData, 15000);
+        return () => clearInterval(interval);
+    }, []);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            isMiningRef.current = false;
+            if (workerRef.current) {
+                workerRef.current.terminate();
+            }
+            if (tickIntervalRef.current) {
+                clearInterval(tickIntervalRef.current);
+            }
+            leaveMining().catch(() => { });
+        };
+    }, []);
+
+    // Kill the current worker
+    const killWorker = () => {
+        if (workerRef.current) {
+            workerRef.current.postMessage({ type: 'stop' });
+            workerRef.current.terminate();
+            workerRef.current = null;
+        }
+    };
 
     // Stop everything
     const stopMining = () => {
