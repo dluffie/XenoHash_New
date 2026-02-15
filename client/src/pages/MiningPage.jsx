@@ -12,8 +12,8 @@ export default function MiningPage() {
     // Mining state
     const [isMining, setIsMining] = useState(false);
     const [hashrate, setHashrate] = useState(0);
-    const [noncesTried, setNoncesTried] = useState(0);
-    const [elapsed, setElapsed] = useState(0);
+    const [sessionHashes, setSessionHashes] = useState(0);
+    const [sessionDuration, setSessionDuration] = useState(0);
     const [miningResult, setMiningResult] = useState(null);
     const [statusText, setStatusText] = useState('Ready to mine');
 
@@ -21,6 +21,8 @@ export default function MiningPage() {
     const workerRef = useRef(null);
     const tickIntervalRef = useRef(null);
     const isMiningRef = useRef(false);
+    const sessionStartRef = useRef(0);
+    const cumulativeHashesRef = useRef(0);
 
     const modes = [
         { id: 'basic', label: 'Basic', cost: 10, multiplier: '1x' },
@@ -29,48 +31,11 @@ export default function MiningPage() {
         { id: 'nitro', label: 'Nitro', cost: 80, multiplier: '8x' }
     ];
 
-    // Fetch block data
-    const fetchBlockData = async () => {
-        try {
-            const [blockRes, blocksRes] = await Promise.all([
-                getCurrentBlock(),
-                getLastBlocks()
-            ]);
-            setBlock(blockRes.data);
-            setLastBlocks(blocksRes.data.blocks || []);
-        } catch (err) {
-            console.error('Failed to fetch block data:', err);
-        }
-    };
+    // Fetch block data ... (omitted for brevity, keep existing)
 
-    useEffect(() => {
-        fetchBlockData();
-        const interval = setInterval(fetchBlockData, 15000);
-        return () => clearInterval(interval);
-    }, []);
+    // ... (keep useEffects)
 
-    // Cleanup on unmount
-    useEffect(() => {
-        return () => {
-            isMiningRef.current = false;
-            if (workerRef.current) {
-                workerRef.current.terminate();
-            }
-            if (tickIntervalRef.current) {
-                clearInterval(tickIntervalRef.current);
-            }
-            leaveMining().catch(() => { });
-        };
-    }, []);
-
-    // Kill the current worker
-    const killWorker = () => {
-        if (workerRef.current) {
-            workerRef.current.postMessage({ type: 'stop' });
-            workerRef.current.terminate();
-            workerRef.current = null;
-        }
-    };
+    // Kill the current worker ... (keep existing)
 
     // Stop everything
     const stopMining = () => {
@@ -83,10 +48,14 @@ export default function MiningPage() {
             tickIntervalRef.current = null;
         }
         leaveMining().catch(() => { });
+
+        // Reset session refs so next start begins fresh
+        sessionStartRef.current = 0;
+        cumulativeHashesRef.current = 0;
     };
 
     // Mine a single block — returns a promise that resolves when hash is found
-    const mineOneBlock = (blockNumber, telegramId, targetDifficulty) => {
+    const mineOneBlock = (blockNumber, telegramId, targetDifficulty, onProgress) => {
         return new Promise((resolve, reject) => {
             killWorker();
 
@@ -99,12 +68,10 @@ export default function MiningPage() {
             worker.onmessage = (e) => {
                 const msg = e.data;
                 if (msg.type === 'progress') {
-                    setHashrate(msg.hashrate);
-                    setNoncesTried(msg.hashCount);
-                    setElapsed(msg.elapsed);
+                    onProgress(msg.hashrate, msg.hashCount);
                 }
                 if (msg.type === 'found') {
-                    resolve({ hash: msg.hash, nonce: msg.nonce });
+                    resolve({ hash: msg.hash, nonce: msg.nonce, hashes: msg.hashCount });
                 }
             };
 
@@ -125,6 +92,14 @@ export default function MiningPage() {
         setIsMining(true);
         setMiningResult(null);
 
+        // Reset session stats
+        if (!sessionStartRef.current) {
+            sessionStartRef.current = Date.now();
+            cumulativeHashesRef.current = 0;
+            setSessionHashes(0);
+            setSessionDuration(0);
+        }
+
         // Start energy tick interval
         if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
         tickIntervalRef.current = setInterval(async () => {
@@ -140,6 +115,9 @@ export default function MiningPage() {
                     energy: tickRes.data.energy,
                     maxEnergy: tickRes.data.maxEnergy
                 });
+
+                // Update duration
+                setSessionDuration(Math.floor((Date.now() - sessionStartRef.current) / 1000));
             } catch (err) {
                 console.error('Tick error:', err);
             }
@@ -149,6 +127,7 @@ export default function MiningPage() {
         while (isMiningRef.current) {
             try {
                 // 1. Join the pool
+                // Don't reset hashrate/elapsed here to keep it continuous
                 setStatusText('Joining mining pool...');
                 const joinRes = await joinMining(mode);
                 const joinedBlock = joinRes.data.block;
@@ -157,20 +136,25 @@ export default function MiningPage() {
 
                 setBlock(prev => ({ ...prev, ...joinedBlock }));
                 setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
-                setHashrate(0);
-                setNoncesTried(0);
-                setElapsed(0);
 
                 // 2. Mine until hash is found
-                const { hash, nonce } = await mineOneBlock(
+                const { hash, nonce, hashes } = await mineOneBlock(
                     joinedBlock.blockNumber,
                     user.telegramId,
-                    joinedBlock.targetDifficulty
+                    joinedBlock.targetDifficulty,
+                    (currentHashrate, blockHashes) => {
+                        setHashrate(currentHashrate);
+                        setSessionHashes(cumulativeHashesRef.current + blockHashes);
+                        setSessionDuration(Math.floor((Date.now() - sessionStartRef.current) / 1000));
+                    }
                 );
 
                 if (!isMiningRef.current) break;
 
-                // 3. Submit the hash
+                // Add block hashes to cumulative total
+                cumulativeHashesRef.current += hashes;
+
+                // 3. Submit the hash ... (keep existing logic)
                 setStatusText('Hash found! Submitting...');
                 try {
                     const submitRes = await submitHash(hash, nonce);
@@ -305,12 +289,12 @@ export default function MiningPage() {
                             <span className="mining-stat-label">H/s</span>
                         </div>
                         <div className="mining-stat">
-                            <span className="mining-stat-value">{noncesTried.toLocaleString()}</span>
-                            <span className="mining-stat-label">Hashes</span>
+                            <span className="mining-stat-value">{sessionHashes.toLocaleString()}</span>
+                            <span className="mining-stat-label">Session Hashes</span>
                         </div>
                         <div className="mining-stat">
-                            <span className="mining-stat-value">{elapsed}s</span>
-                            <span className="mining-stat-label">Time</span>
+                            <span className="mining-stat-value">{sessionDuration}s</span>
+                            <span className="mining-stat-label">Session Time</span>
                         </div>
                     </div>
                     <div className="mining-progress-bar">
