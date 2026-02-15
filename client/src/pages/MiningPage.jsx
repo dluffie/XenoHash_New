@@ -26,11 +26,18 @@ export default function MiningPage() {
     const sessionStartBalanceRef = useRef(null);
 
     const modes = [
-        { id: 'basic', label: 'Basic', cost: 10, multiplier: '1x' },
-        { id: 'turbo', label: 'Turbo', cost: 20, multiplier: '2x' },
-        { id: 'super', label: 'Super', cost: 40, multiplier: '4x' },
-        { id: 'nitro', label: 'Nitro', cost: 80, multiplier: '8x' }
+        { id: 'basic', label: 'Basic', cost: 100, multiplier: '1x' },
+        { id: 'turbo', label: 'Turbo', cost: 200, multiplier: '2x' },
+        { id: 'super', label: 'Super', cost: 400, multiplier: '4x' },
+        { id: 'nitro', label: 'Nitro', cost: 800, multiplier: '8x' }
     ];
+
+    const MODE_THROTTLE = {
+        basic: 50, // Throttle Basic mode (low CPU)
+        turbo: 0,
+        super: 0,
+        nitro: 0
+    };
 
     // Fetch block data
     const fetchBlockData = async () => {
@@ -97,7 +104,7 @@ export default function MiningPage() {
     };
 
     // Mine a single block — returns a promise that resolves when hash is found
-    const mineOneBlock = (blockNumber, telegramId, targetDifficulty, onProgress) => {
+    const mineOneBlock = (blockNumber, telegramId, targetDifficulty, mode, onProgress) => {
         return new Promise((resolve, reject) => {
             killWorker();
 
@@ -123,7 +130,12 @@ export default function MiningPage() {
 
             worker.postMessage({
                 type: 'start',
-                data: { blockNumber, telegramId, targetDifficulty }
+                data: {
+                    blockNumber,
+                    telegramId,
+                    targetDifficulty,
+                    throttle: MODE_THROTTLE[mode] || 0
+                }
             });
         });
     };
@@ -189,6 +201,7 @@ export default function MiningPage() {
                     joinedBlock.blockNumber,
                     user.telegramId,
                     joinedBlock.targetDifficulty,
+                    mode,
                     (currentHashrate, blockHashes) => {
                         setHashrate(currentHashrate);
                         setSessionHashes(cumulativeHashesRef.current + blockHashes);
@@ -317,7 +330,7 @@ export default function MiningPage() {
                         <div className="block-item">
                             <span className="block-label">Profit</span>
                             <span className="block-value highlight">
-                                +{Math.max(0, (user?.tokens - (sessionStartBalanceRef.current ?? user?.tokens))).toFixed(2)} XNH
+                                +{Math.max(0, ((user?.tokens || 0) - (sessionStartBalanceRef.current ?? (user?.tokens || 0)))).toFixed(2)} XNH
                             </span>
                         </div>
                         <div className="block-item">
@@ -368,7 +381,7 @@ export default function MiningPage() {
                         >
                             {isLocked && <span className="lock-icon">🔒</span>}
                             {mode.label}
-                            <span className="mode-cost">{mode.cost}⚡/tick</span>
+                            <span className="mode-cost">{mode.cost}⚡</span>
                         </button>
                     );
                 })}

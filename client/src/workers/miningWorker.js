@@ -20,7 +20,7 @@ function bufferToHex(buffer) {
 }
 
 // Main mining loop
-async function mineLoop() {
+async function mineLoop(throttle = 0) {
     const targetPrefix = '0'.repeat(targetDifficulty);
     const encoder = new TextEncoder();
     const batchSize = 500; // Hashes per batch before yielding
@@ -61,8 +61,8 @@ async function mineLoop() {
             elapsed: Math.round(elapsed)
         });
 
-        // Yield to allow message processing
-        await new Promise(resolve => setTimeout(resolve, 0));
+        // Yield to allow message processing (and throttle if requested)
+        await new Promise(resolve => setTimeout(resolve, throttle));
     }
 }
 
@@ -75,13 +75,15 @@ self.onmessage = function (e) {
             blockNumber = data.blockNumber;
             telegramId = data.telegramId;
             targetDifficulty = data.targetDifficulty;
+            const throttle = data.throttle || 0; // ms delay per batch
+
             nonce = Math.floor(Math.random() * 1000000); // Random start nonce
             hashCount = 0;
             startTime = Date.now();
             mining = true;
 
             self.postMessage({ type: 'started', startNonce: nonce });
-            mineLoop();
+            mineLoop(throttle);
             break;
 
         case 'stop':

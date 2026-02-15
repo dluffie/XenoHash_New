@@ -17,10 +17,10 @@ const router = express.Router();
 
 // Mining mode configurations
 const MINING_MODES = {
-    basic: { energyPerTick: 10, multiplier: 1, label: 'Basic' },
-    turbo: { energyPerTick: 20, multiplier: 2, label: 'Turbo' },
-    super: { energyPerTick: 40, multiplier: 4, label: 'Super' },
-    nitro: { energyPerTick: 80, multiplier: 8, label: 'Nitro' }
+    basic: { energyPerTick: 100, multiplier: 1, label: 'Basic' },
+    turbo: { energyPerTick: 200, multiplier: 2, label: 'Turbo' },
+    super: { energyPerTick: 400, multiplier: 4, label: 'Super' },
+    nitro: { energyPerTick: 800, multiplier: 8, label: 'Nitro' }
 };
 
 // Stale miner timeout (30 seconds without tick = inactive)
@@ -222,7 +222,7 @@ router.post('/tick', auth, async (req, res) => {
             { _id: block._id, "activeMiners.userId": user._id },
             {
                 $set: { "activeMiners.$.lastTick": new Date() },
-                $inc: { totalHashes: Math.floor(Math.random() * 500) + 100, totalShares: 1 }
+                $inc: { totalHashes: (Math.floor(Math.random() * 500) + 100) * config.multiplier, totalShares: 1 }
             }
         );
 
