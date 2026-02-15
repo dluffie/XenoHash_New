@@ -76,6 +76,98 @@ export default function MiningPage() {
         leaveMining().catch(() => { });
     }, []);
 
+    // Start mining a specific block (reusable — called after each block found)
+    const startMiningBlock = useCallback(async (mode) => {
+        try {
+            const joinRes = await joinMining(mode);
+            const { block: joinedBlock } = joinRes.data;
+
+            setBlock(prev => ({ ...prev, ...joinedBlock }));
+            setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
+
+            // Kill old worker if any
+            if (workerRef.current) {
+                workerRef.current.terminate();
+                workerRef.current = null;
+            }
+
+            // Start a new Web Worker
+            const worker = new Worker(
+                new URL('../workers/miningWorker.js', import.meta.url),
+                { type: 'module' }
+            );
+            workerRef.current = worker;
+
+            worker.onmessage = async (e) => {
+                const msg = e.data;
+
+                if (msg.type === 'progress') {
+                    setHashrate(msg.hashrate);
+                    setNoncesTried(msg.hashCount);
+                    setElapsed(msg.elapsed);
+                }
+
+                if (msg.type === 'found') {
+                    // Hash found! Submit to server
+                    setStatusText('Hash found! Submitting to server...');
+
+                    try {
+                        const submitRes = await submitHash(msg.hash, msg.nonce);
+                        setMiningResult(submitRes.data);
+                        updateUser(submitRes.data.newBalance);
+                        setStatusText(`🎉 Block #${submitRes.data.blockNumber} mined! Starting next block...`);
+
+                        // Fetch updated block data
+                        fetchBlockData();
+
+                        // Auto-continue to next block if still mining
+                        if (isMiningRef.current) {
+                            // Small delay so user can see the result
+                            setTimeout(() => {
+                                if (isMiningRef.current) {
+                                    startMiningBlock(mode);
+                                }
+                            }, 1500);
+                        }
+                    } catch (err) {
+                        const errMsg = err.response?.data?.error || 'Submit failed';
+                        if (errMsg.includes('already completed') || errMsg.includes('already been solved')) {
+                            // Someone else solved it first — just move to next block
+                            setStatusText('Block already solved by another miner. Moving to next...');
+                            fetchBlockData();
+                            if (isMiningRef.current) {
+                                setTimeout(() => {
+                                    if (isMiningRef.current) {
+                                        startMiningBlock(mode);
+                                    }
+                                }, 1000);
+                            }
+                        } else {
+                            setMiningResult({ error: errMsg });
+                            setStatusText('Submit failed: ' + errMsg);
+                            stopMining();
+                        }
+                    }
+                }
+            };
+
+            // Start hashing
+            worker.postMessage({
+                type: 'start',
+                data: {
+                    blockNumber: joinedBlock.blockNumber,
+                    telegramId: user.telegramId,
+                    targetDifficulty: joinedBlock.targetDifficulty
+                }
+            });
+        } catch (err) {
+            const msg = err.response?.data?.error || 'Failed to join mining';
+            setMiningResult({ error: msg });
+            setStatusText('Failed: ' + msg);
+            stopMining();
+        }
+    }, [user, fetchBlockData, stopMining, updateUser]);
+
     const handleStartMining = async () => {
         if (isMining) {
             stopMining();
@@ -99,91 +191,33 @@ export default function MiningPage() {
         setElapsed(0);
         setStatusText('Joining mining pool...');
 
-        try {
-            // Join the mining pool
-            const joinRes = await joinMining(selectedMode);
-            const { block: joinedBlock } = joinRes.data;
+        // Start mining the first block
+        await startMiningBlock(selectedMode);
 
-            setBlock(prev => ({ ...prev, ...joinedBlock }));
-            setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
+        // Energy tick every 2 seconds
+        if (tickIntervalRef.current) clearInterval(tickIntervalRef.current);
+        tickIntervalRef.current = setInterval(async () => {
+            if (!isMiningRef.current) return;
 
-            // Start the Web Worker
-            const worker = new Worker(
-                new URL('../workers/miningWorker.js', import.meta.url),
-                { type: 'module' }
-            );
-            workerRef.current = worker;
+            try {
+                const tickRes = await miningTick();
 
-            worker.onmessage = async (e) => {
-                const msg = e.data;
-
-                if (msg.type === 'progress') {
-                    setHashrate(msg.hashrate);
-                    setNoncesTried(msg.hashCount);
-                    setElapsed(msg.elapsed);
-                }
-
-                if (msg.type === 'found') {
-                    // Hash found! Submit to server
-                    setStatusText('Hash found! Submitting to server...');
-                    setHashrate(0);
-
-                    try {
-                        const submitRes = await submitHash(msg.hash, msg.nonce);
-                        setMiningResult(submitRes.data);
-                        updateUser(submitRes.data.newBalance);
-                        setStatusText(`🎉 Block #${submitRes.data.blockNumber} mined! +${submitRes.data.finderReward} XNH`);
-                    } catch (err) {
-                        const errMsg = err.response?.data?.error || 'Submit failed';
-                        setMiningResult({ error: errMsg });
-                        setStatusText('Submit failed: ' + errMsg);
-                    }
-
+                if (!tickRes.data.continue) {
+                    // Out of energy or no active block
+                    setStatusText(`Mining stopped: ${tickRes.data.reason}`);
                     stopMining();
-                    setTimeout(fetchBlockData, 1000);
+                    return;
                 }
-            };
 
-            // Start hashing
-            worker.postMessage({
-                type: 'start',
-                data: {
-                    blockNumber: joinedBlock.blockNumber,
-                    telegramId: user.telegramId,
-                    targetDifficulty: joinedBlock.targetDifficulty
-                }
-            });
-
-            // Energy tick every 2 seconds
-            tickIntervalRef.current = setInterval(async () => {
-                if (!isMiningRef.current) return;
-
-                try {
-                    const tickRes = await miningTick();
-
-                    if (!tickRes.data.continue) {
-                        // Out of energy or no active block
-                        setStatusText(`Mining stopped: ${tickRes.data.reason}`);
-                        stopMining();
-                        return;
-                    }
-
-                    // Update user energy
-                    updateUser({
-                        energy: tickRes.data.energy,
-                        maxEnergy: tickRes.data.maxEnergy
-                    });
-                } catch (err) {
-                    console.error('Tick error:', err);
-                }
-            }, 2000);
-
-        } catch (err) {
-            const msg = err.response?.data?.error || 'Failed to join mining';
-            setMiningResult({ error: msg });
-            setStatusText('Failed: ' + msg);
-            stopMining();
-        }
+                // Update user energy
+                updateUser({
+                    energy: tickRes.data.energy,
+                    maxEnergy: tickRes.data.maxEnergy
+                });
+            } catch (err) {
+                console.error('Tick error:', err);
+            }
+        }, 2000);
     };
 
     const currentMode = modes.find(m => m.id === selectedMode);

@@ -1,7 +1,31 @@
+import { useTonConnectUI, useTonAddress } from '@tonconnect/ui-react';
 import { useUser } from '../context/UserContext';
+import { connectWallet } from '../api';
+import { useEffect } from 'react';
 
 export default function TokenPage() {
     const { user } = useUser();
+    const [tonConnectUI] = useTonConnectUI();
+    const tonAddress = useTonAddress();
+
+    // Save wallet address to server when connected
+    useEffect(() => {
+        if (tonAddress) {
+            connectWallet(tonAddress).catch(console.error);
+        }
+    }, [tonAddress]);
+
+    const handleConnectWallet = async () => {
+        try {
+            if (tonAddress) {
+                await tonConnectUI.disconnect();
+            } else {
+                await tonConnectUI.openModal();
+            }
+        } catch (err) {
+            console.error('Wallet connection error:', err);
+        }
+    };
 
     return (
         <div className="page token-page">
@@ -9,11 +33,25 @@ export default function TokenPage() {
             <div className="wallet-card">
                 <div className="wallet-content">
                     <div className="wallet-text">
-                        <h3>Connect your wallet to collect tokens after TGE</h3>
-                        <button className="connect-btn">
-                            <span className="connect-icon">💎</span>
-                            Connect
-                        </button>
+                        {tonAddress ? (
+                            <>
+                                <h3>Wallet Connected ✅</h3>
+                                <div className="wallet-address" style={{ marginBottom: '0.75rem', fontSize: '0.8rem' }}>
+                                    {tonAddress.substring(0, 8)}...{tonAddress.substring(tonAddress.length - 6)}
+                                </div>
+                                <button className="connect-btn" onClick={handleConnectWallet}>
+                                    Disconnect
+                                </button>
+                            </>
+                        ) : (
+                            <>
+                                <h3>Connect your wallet to collect tokens after TGE</h3>
+                                <button className="connect-btn" onClick={handleConnectWallet}>
+                                    <span className="connect-icon">💎</span>
+                                    Connect
+                                </button>
+                            </>
+                        )}
                     </div>
                     <div className="wallet-icons">
                         <div className="floating-icon icon-1">💎</div>
@@ -34,26 +72,20 @@ export default function TokenPage() {
                 <h4 className="info-section-title">Earn through mining</h4>
                 <div className="info-section-content">
                     <p>
-                        Just click on 'Start Mining' and wait for you to receive the tokens.
-                        If you are a beginner, we recommend that you focus on mining and only
-                        then study the technical part.
+                        Click 'Start Mining' and your device will begin computing SHA-256 hashes
+                        to find the correct hash for the current block. Mining continues automatically
+                        until your energy depletes. Energy regenerates at 1 per second.
                     </p>
                 </div>
             </div>
 
             <div className="info-section">
-                <h4 className="info-section-title">Your task</h4>
+                <h4 className="info-section-title">Reward system</h4>
                 <div className="info-section-content">
                     <p>
-                        The task of the device is to select the correct hash for the current
-                        block. If successful, you will receive a reward for this. 30% of the
-                        block reward is intended for the first miner who discovers the correct
-                        hash, and 70% is divided among other participants who also participated
-                        in the selection.
-                    </p>
-                    <p style={{ marginTop: '0.75rem' }}>
-                        <strong>Attention:</strong> Every 100,000 blocks, the miner's reward will
-                        decrease by 5% until it reaches 5%.
+                        50% of the block reward goes to the miner who discovers the correct hash,
+                        and 50% is split among other active miners in the pool. Block rewards halve
+                        every 100 blocks to control supply.
                     </p>
                 </div>
             </div>
@@ -94,15 +126,15 @@ export default function TokenPage() {
                     <div className="token-stats-grid">
                         <div className="token-stat-item">
                             <span className="token-stat-label">Total Supply</span>
-                            <span className="token-stat-value">2,000,000,000 XNH</span>
+                            <span className="token-stat-value">1,000,000,000 XNH</span>
                         </div>
                         <div className="token-stat-item">
-                            <span className="token-stat-label">Mining Blocks</span>
-                            <span className="token-stat-value">2,000,000</span>
+                            <span className="token-stat-label">Halving</span>
+                            <span className="token-stat-value">Every 100 blocks</span>
                         </div>
                         <div className="token-stat-item">
                             <span className="token-stat-label">Energy Regen</span>
-                            <span className="token-stat-value">1 / minute</span>
+                            <span className="token-stat-value">1 / second</span>
                         </div>
                         <div className="token-stat-item">
                             <span className="token-stat-label">Referral Bonus</span>

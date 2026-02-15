@@ -132,39 +132,6 @@ export default function ServicePage() {
 
     return (
         <div className="page service-page">
-            {/* Wallet Connection */}
-            <div className="section-title">
-                <span className="title-icon">💎</span>
-                TON Wallet
-            </div>
-
-            <div className="info-card wallet-card">
-                <div className="wallet-status">
-                    {tonAddress ? (
-                        <>
-                            <div className="wallet-connected">
-                                <span className="wallet-dot connected"></span>
-                                <span className="wallet-label">Connected</span>
-                            </div>
-                            <div className="wallet-address">
-                                {tonAddress.substring(0, 6)}...{tonAddress.substring(tonAddress.length - 4)}
-                            </div>
-                        </>
-                    ) : (
-                        <div className="wallet-disconnected">
-                            <span className="wallet-dot"></span>
-                            <span className="wallet-label">No wallet connected</span>
-                        </div>
-                    )}
-                </div>
-                <button
-                    className={`wallet-btn ${tonAddress ? 'disconnect' : 'connect'}`}
-                    onClick={handleConnectWallet}
-                >
-                    {tonAddress ? 'Disconnect' : '🔗 Connect Wallet'}
-                </button>
-            </div>
-
             {/* Energy Section */}
             <div className="section-title">
                 <span className="title-icon">⚡</span>
