@@ -514,7 +514,7 @@ router.get('/history', auth, async (req, res) => {
     }
 });
 
-// GET /api/mining/last-blocks - Last completed blocks
+// GET /api/mining/last-blocks - Last completed blocks (with per-user reward data)
 router.get('/last-blocks', auth, async (req, res) => {
     try {
         const blocks = await Block.find({ status: 'completed' })
@@ -522,35 +522,49 @@ router.get('/last-blocks', auth, async (req, res) => {
             .limit(10)
             .populate('minedBy', 'username firstName');
 
-        // Build previous hash map
-        const prevHashMap = {};
-        try {
-            const blockNumbers = blocks.map(b => b.blockNumber);
-            if (blockNumbers.length > 0) {
-                const prevBlocks = await Block.find({
-                    blockNumber: { $in: blockNumbers.map(n => n - 1) },
-                    status: 'completed'
-                }).select('blockNumber winningHash');
-                prevBlocks.forEach(pb => { prevHashMap[pb.blockNumber + 1] = pb.winningHash; });
-            }
-        } catch (err) {
-            console.error('Prev hash lookup error (non-fatal):', err);
+        const currentUserId = req.user._id.toString();
+        const blockIds = blocks.map(b => b._id);
+
+        // Get all mining activities for these blocks in one query
+        const allActivities = await MiningActivity.find({
+            blockId: { $in: blockIds }
+        }).select('blockId userId tokensEarned isBlockFinder shareReward');
+
+        // Build per-block activity maps
+        const blockActivityMap = {};
+        for (const activity of allActivities) {
+            const bid = activity.blockId.toString();
+            if (!blockActivityMap[bid]) blockActivityMap[bid] = [];
+            blockActivityMap[bid].push(activity);
         }
 
         res.json({
-            blocks: blocks.map(b => ({
-                blockNumber: b.blockNumber,
-                targetDifficulty: b.targetDifficulty,
-                reward: b.reward,
-                era: b.era,
-                minedBy: b.minedBy?.username || b.minedBy?.firstName || 'Anonymous',
-                winningHash: b.winningHash || null,
-                previousHash: prevHashMap[b.blockNumber] || '0000000000000000',
-                winningNonce: b.winningNonce,
-                totalShares: b.totalShares,
-                totalHashes: b.totalHashes,
-                completedAt: b.completedAt
-            }))
+            blocks: blocks.map(b => {
+                const activities = blockActivityMap[b._id.toString()] || [];
+                const finderActivity = activities.find(a => a.isBlockFinder);
+                const poolActivities = activities.filter(a => !a.isBlockFinder);
+                const myActivity = activities.find(a => a.userId.toString() === currentUserId);
+
+                return {
+                    blockNumber: b.blockNumber,
+                    targetDifficulty: b.targetDifficulty,
+                    reward: b.reward,
+                    era: b.era,
+                    minedBy: b.minedBy?.username || b.minedBy?.firstName || 'Anonymous',
+                    winningHash: b.winningHash || null,
+                    winningNonce: b.winningNonce,
+                    totalShares: b.totalShares,
+                    totalHashes: b.totalHashes,
+                    completedAt: b.completedAt,
+                    // Per-user reward data
+                    myReward: myActivity ? myActivity.tokensEarned : 0,
+                    minerReward: finderActivity ? finderActivity.tokensEarned : b.reward,
+                    minerCount: activities.length || 1,
+                    participantsAward: poolActivities.length > 0
+                        ? Math.round((poolActivities.reduce((sum, a) => sum + a.tokensEarned, 0) / poolActivities.length) * 100) / 100
+                        : 0
+                };
+            })
         });
     } catch (error) {
         console.error('Last blocks error:', error);

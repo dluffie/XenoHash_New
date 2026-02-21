@@ -151,10 +151,10 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 0 1rem;
-  /* Add safe area padding for notches/status bars */
-  padding-top: env(safe-area-inset-top, 20px);
+  /* Safe area: use max() to ensure header clears phone status bar on all devices */
+  padding-top: max(env(safe-area-inset-top, 0px), 12px);
   padding-bottom: 0px;
-  height: calc(var(--header-height) + env(safe-area-inset-top, 20px));
+  min-height: calc(var(--header-height) + max(env(safe-area-inset-top, 0px), 12px));
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
@@ -1724,36 +1724,78 @@ body {
   transition: transform 0.2s;
 }
 
+.block-reward.muted {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 .block-detail {
-  padding: 0 1rem 0.75rem;
+  padding: 0.75rem 1rem;
   border-top: 1px solid var(--border-color);
   animation: fadeIn 0.2s ease;
+}
+
+.block-detail-section {
+  margin-bottom: 0.75rem;
+}
+
+.block-detail-section-label {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 0.35rem;
+}
+
+.block-hash-box {
+  font-family: 'Courier New', monospace;
+  color: var(--accent-cyan);
+  font-size: 0.7rem;
+  line-height: 1.5;
+  padding: 0.5rem 0.65rem;
+  background: var(--bg-input);
+  border-radius: 8px;
+  word-break: break-all;
+  border: 1px solid var(--border-color);
+}
+
+.block-detail-table {
+  display: flex;
+  flex-direction: column;
 }
 
 .block-detail-row {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
-  padding: 0.4rem 0;
+  align-items: center;
+  padding: 0.5rem 0;
   gap: 1rem;
 }
 
 .block-detail-row:not(:last-child) {
-  border-bottom: 1px solid rgba(42, 42, 90, 0.3);
+  border-bottom: 1px solid rgba(42, 42, 90, 0.4);
 }
 
 .block-detail-label {
-  color: var(--text-muted);
-  font-size: 0.75rem;
+  color: var(--accent-yellow);
+  font-size: 0.8rem;
+  font-weight: 600;
   white-space: nowrap;
-  min-width: 90px;
+  min-width: 120px;
 }
 
 .block-detail-value {
   color: var(--text-primary);
-  font-size: 0.75rem;
+  font-size: 0.8rem;
   text-align: right;
   word-break: break-all;
+}
+
+.block-detail-value.highlight {
+  color: var(--accent-cyan);
+  font-weight: 600;
 }
 
 .hash-text {

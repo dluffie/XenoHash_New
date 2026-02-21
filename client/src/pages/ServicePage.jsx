@@ -75,7 +75,23 @@ export default function ServicePage() {
                 ]
             };
 
-            const result = await tonConnectUI.sendTransaction(transaction);
+            let result;
+            try {
+                result = await tonConnectUI.sendTransaction(transaction);
+            } catch (txErr) {
+                // Handle specific TON Connect SDK errors
+                const errStr = String(txErr?.message || txErr || '');
+                if (errStr.includes('User rejected') || errStr.includes('user cancel')) {
+                    setMessage({ type: 'error', text: 'Transaction cancelled by user' });
+                } else if (errStr.includes('Transaction was not sent') || errStr.includes('TON_CONNECT_SDK_ERROR')) {
+                    setMessage({ type: 'error', text: '⚠️ Transaction failed to send. Please check your wallet is connected and try again.' });
+                } else if (errStr.includes('timeout') || errStr.includes('Timeout')) {
+                    setMessage({ type: 'error', text: '⏱️ Transaction timed out. Please try again.' });
+                } else {
+                    setMessage({ type: 'error', text: `Transaction error: ${errStr.substring(0, 100)}` });
+                }
+                return;
+            }
 
             // Transaction sent — notify server with BOC
             const boc = result.boc;
@@ -101,12 +117,8 @@ export default function ServicePage() {
             }
         } catch (err) {
             console.error('Purchase error:', err);
-            if (err?.message?.includes('User rejected')) {
-                setMessage({ type: 'error', text: 'Transaction cancelled by user' });
-            } else {
-                const errMsg = err.response?.data?.error || err.message || 'Purchase failed';
-                setMessage({ type: 'error', text: errMsg });
-            }
+            const errMsg = err.response?.data?.error || err.message || 'Purchase failed';
+            setMessage({ type: 'error', text: errMsg });
         } finally {
             setPurchasing(null);
         }

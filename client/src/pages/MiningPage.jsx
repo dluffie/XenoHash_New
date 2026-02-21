@@ -150,9 +150,9 @@ export default function MiningPage() {
         if (!sessionStartRef.current) {
             sessionStartRef.current = Date.now();
             cumulativeHashesRef.current = 0;
-            // Set start balance if not set
-            if (sessionStartBalanceRef.current === null && user) {
-                sessionStartBalanceRef.current = user.tokens;
+            // Set start balance — always ensure it's a valid number
+            if (sessionStartBalanceRef.current === null || sessionStartBalanceRef.current === undefined || isNaN(sessionStartBalanceRef.current)) {
+                sessionStartBalanceRef.current = Number(user?.tokens) || 0;
             }
             setSessionHashes(0);
             setSessionDuration(0);
@@ -193,7 +193,13 @@ export default function MiningPage() {
 
                 if (!isMiningRef.current) break;
 
-                setBlock(prev => ({ ...prev, ...joinedBlock }));
+                // Merge join data but preserve existing totalShares/onlineMiners/totalHashes
+                setBlock(prev => ({
+                    ...prev,
+                    ...joinedBlock,
+                    totalShares: joinedBlock.totalShares ?? prev?.totalShares ?? 0,
+                    totalHashes: joinedBlock.totalHashes ?? prev?.totalHashes ?? 0
+                }));
                 setStatusText(`Mining Block #${joinedBlock.blockNumber} — searching for hash...`);
 
                 // 2. Mine until hash is found
@@ -303,7 +309,7 @@ export default function MiningPage() {
                 </div>
                 <div className="info-row">
                     <span className="info-label">My tokens</span>
-                    <span className="info-value token-value">{user?.tokens?.toLocaleString(undefined, { minimumFractionDigits: 2 }) || '0.00'}</span>
+                    <span className="info-value token-value">{(Number(user?.tokens) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                 </div>
             </div>
 
@@ -321,21 +327,26 @@ export default function MiningPage() {
                         </div>
                         <div className="block-item">
                             <span className="block-label">Reward</span>
-                            <span className="block-value">{block.reward?.toLocaleString()} XNH</span>
+                            <span className="block-value">{(block.reward ?? 0).toLocaleString()} XNH</span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Online</span>
-                            <span className="block-value highlight">{block.onlineMiners || 0}</span>
+                            <span className="block-value highlight">{block.onlineMiners ?? 0}</span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Profit</span>
                             <span className="block-value highlight">
-                                +{Math.max(0, ((user?.tokens || 0) - (sessionStartBalanceRef.current ?? (user?.tokens || 0)))).toFixed(2)} XNH
+                                +{(() => {
+                                    const currentTokens = Number(user?.tokens) || 0;
+                                    const startBalance = Number(sessionStartBalanceRef.current) || 0;
+                                    const profit = currentTokens - startBalance;
+                                    return isNaN(profit) ? '0.00' : Math.max(0, profit).toFixed(2);
+                                })()} XNH
                             </span>
                         </div>
                         <div className="block-item">
                             <span className="block-label">Shares</span>
-                            <span className="block-value">{block.totalShares}</span>
+                            <span className="block-value">{block.totalShares ?? 0}</span>
                         </div>
                     </div>
                 </div>
@@ -454,39 +465,43 @@ export default function MiningPage() {
                                     <span className="block-miner">{b.minedBy}</span>
                                 </div>
                                 <div className="block-row-right">
-                                    <span className="block-reward">+{b.reward} XNH</span>
+                                    <span className={`block-reward ${(b.myReward ?? 0) > 0 ? '' : 'muted'}`}>
+                                        {(b.myReward ?? 0) > 0 ? `+${b.myReward}` : '0'} XNH
+                                    </span>
                                     <span className="block-expand-icon">{expandedBlock === b.blockNumber ? '▲' : '▼'}</span>
                                 </div>
                             </div>
                             {expandedBlock === b.blockNumber && (
                                 <div className="block-detail">
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Hash</span>
-                                        <span className="block-detail-value hash-text">{b.winningHash || '—'}</span>
+                                    <div className="block-detail-section">
+                                        <span className="block-detail-section-label">HASH</span>
+                                        <div className="block-hash-box">{b.winningHash || '—'}</div>
                                     </div>
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Previous Hash</span>
-                                        <span className="block-detail-value hash-text">{b.previousHash || '—'}</span>
-                                    </div>
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Nonce</span>
-                                        <span className="block-detail-value">{b.winningNonce?.toLocaleString() || '—'}</span>
-                                    </div>
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Difficulty</span>
-                                        <span className="block-detail-value">{'0'.repeat(b.targetDifficulty || 0)}...</span>
-                                    </div>
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Found by</span>
-                                        <span className="block-detail-value">{b.minedBy}</span>
-                                    </div>
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Timestamp</span>
-                                        <span className="block-detail-value">{b.completedAt ? new Date(b.completedAt).toLocaleString() : '—'}</span>
-                                    </div>
-                                    <div className="block-detail-row">
-                                        <span className="block-detail-label">Era</span>
-                                        <span className="block-detail-value">{b.era}</span>
+                                    <div className="block-detail-table">
+                                        <div className="block-detail-row">
+                                            <span className="block-detail-label">Miner</span>
+                                            <span className="block-detail-value">{b.minedBy}</span>
+                                        </div>
+                                        <div className="block-detail-row">
+                                            <span className="block-detail-label">Miner's reward</span>
+                                            <span className="block-detail-value">{b.minerReward ?? b.reward}</span>
+                                        </div>
+                                        <div className="block-detail-row">
+                                            <span className="block-detail-label">Number of miners</span>
+                                            <span className="block-detail-value">{b.minerCount ?? 1}</span>
+                                        </div>
+                                        <div className="block-detail-row">
+                                            <span className="block-detail-label">Participants' award</span>
+                                            <span className="block-detail-value">{b.participantsAward ?? 0}</span>
+                                        </div>
+                                        <div className="block-detail-row">
+                                            <span className="block-detail-label">My reward</span>
+                                            <span className="block-detail-value highlight">{b.myReward ?? 0}</span>
+                                        </div>
+                                        <div className="block-detail-row">
+                                            <span className="block-detail-label">Date</span>
+                                            <span className="block-detail-value">{b.completedAt ? new Date(b.completedAt).toLocaleString() : '—'}</span>
+                                        </div>
                                     </div>
                                 </div>
                             )}
